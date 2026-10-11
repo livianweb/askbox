@@ -5,6 +5,21 @@ description: Para maquetación/UI/visual y copy/docs/legibilidad, usar primero e
 
 # Askbox-first (UI y copy antes que Cursor de pago)
 
+## Alcance: solo capa A (LLM)
+
+Esta skill cubre **únicamente** el gateway askbox (`POST /v1/ask`): variables `ASKBOX_API_URL` y
+`ASKBOX_ACCESS_TOKEN` en el entorno del agente. **No** configura Git, remotos ni autopilot.
+
+| Capa | Skill / doc |
+|------|-------------|
+| A — Askbox LLM | **Esta skill** |
+| B — Git del proyecto abierto en Cursor | `git-autopilot` + `.askbox/git-settings.json` / `gh` |
+| C — Git del kit orquestador | `git-autopilot` en el repo del kit + `docs/git-and-askbox.md` |
+
+El producto askbox y el kit **cursor-agent-orchestrator** son repos separados; el token de
+proyecto para ask-first no sustituye credenciales GitHub ni la pantalla `/settings/git` de un
+despliegue askbox (que, si se usa, es por repo montado, no «git global de todas las apps»).
+
 ## Objetivo
 
 Ahorrar coste de subagentes Cursor en tareas donde **askbox** (gateway LLM con keypool y tiers) suele dar buenos resultados:
@@ -128,4 +143,6 @@ En el resumen final, listar qué bloques salieron de askbox y qué de Cursor.
 
 - Orquestación general: `plan-implement-verify`, reglas en `auto-orchestrator.mdc`.
 - Modificar routing interno de askbox (producto): `llm-routing` solo en el repo askbox, no en el kit portable.
-- Commits: `git-autopilot` tras Verify; nunca commitear tokens ni `.env`.
+- **Git (capas B y C):** `git-autopilot` tras Verify en el repo que toques; nunca commitear
+  tokens ni `.env`. No usar askbox para commitear salvo que operes vía API git de un despliegue
+  que monte **ese** repo (`?repo=…`).

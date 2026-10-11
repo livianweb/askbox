@@ -157,6 +157,10 @@ Variables que lee la API (`api/app/config.py` → `api/app/mailer.py`): `ASKBOX_
 
 ## Configuración Git del proyecto (`/settings/git`)
 
+Esta pantalla es **git del producto askbox y repos montados en este despliegue** (capa B/C del
+kit), no un panel universal para cualquier app. El gateway LLM (`ASKBOX_ACCESS_TOKEN` en agentes)
+es independiente (capa A). Las tres capas están en `.cursor/docs/git-and-askbox.md`.
+
 MVP de pantalla de administración para el propio repo de askbox (ver `api/app/gitops.py`,
 `api/app/routers/git_settings.py`, `web/app/settings/git/page.js`):
 
