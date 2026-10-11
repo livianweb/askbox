@@ -198,10 +198,31 @@ async def _create_with_token(path: str, body: RemoteIn, visibility: str, token: 
         raise err(422, "slug_required", "Indica el nombre del repo (slug) para crearlo con el token.")
     existing, _ = await asyncio.to_thread(gitops._run_git, path, "remote")
     if existing and body.name in existing.split():
+        if body.push:
+            ok, error = await asyncio.to_thread(gitops.push_branch, path, body.name, None, token)
+            if not ok:
+                raise err(502, "github_push_failed", f"El remoto ya existía pero el push falló: {error}")
+            if push_prefs:
+                await asyncio.to_thread(gitops.mark_pushed, path)
+            url, _ = await asyncio.to_thread(gitops._run_git, path, "remote", "get-url", body.name)
+            clean = gitops.sanitize_remote_url(url or "")
+            return {
+                "full_name": None,
+                "html_url": clean.removesuffix(".git") if clean else None,
+                "clone_url": clean or url,
+                "private": None,
+                "connected_existing_remote": True,
+            }
         raise err(409, "remote_exists", f"El remoto '{body.name}' ya existe; usa otro nombre o conéctalo con 'url'.")
     info, code, message = await asyncio.to_thread(
         gitops.github_create_repo, token, body.slug, visibility == "private", body.description,
     )
+    if not info and code == "github_repo_exists":
+        login, lcode, lmsg = await asyncio.to_thread(gitops.github_authenticated_login, token)
+        if not login:
+            status_code = 401 if lcode == "github_token_invalid" else 502
+            raise err(status_code, lcode or "github_error", lmsg or "No se pudo leer el usuario de GitHub.")
+        info, code, message = await asyncio.to_thread(gitops.github_get_repo, token, login, body.slug)
     if not info:
         status_code = 409 if code == "github_repo_exists" else (401 if code == "github_token_invalid" else 502)
         raise err(status_code, code or "github_error", message or "Error de GitHub.")

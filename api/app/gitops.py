@@ -287,3 +287,53 @@ def github_create_repo(
     if res.status_code == 422:
         return None, "github_repo_exists", f"GitHub no pudo crear el repo (¿ya existe ese nombre?): {redact(gh_msg, token)}"
     return None, "github_error", f"GitHub respondió {res.status_code}: {redact(gh_msg, token)}"
+
+
+def _github_headers(token: str) -> dict:
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "askbox",
+    }
+
+
+def github_authenticated_login(token: str) -> tuple[str | None, str | None, str | None]:
+    """GET /user → login. Devuelve (login, error_code, mensaje)."""
+    import httpx
+
+    try:
+        res = httpx.get(f"{GITHUB_API}/user", headers=_github_headers(token), timeout=20.0)
+    except httpx.HTTPError as exc:
+        return None, "github_unreachable", f"No se pudo contactar con GitHub ({type(exc).__name__})."
+    if res.status_code == 200:
+        login = (res.json().get("login") or "").strip()
+        return (login or None), None, None
+    if res.status_code == 401:
+        return None, "github_token_invalid", "GitHub rechazó el token (inválido, revocado o caducado)."
+    return None, "github_error", f"GitHub respondió {res.status_code} al leer el usuario."
+
+
+def github_get_repo(token: str, owner: str, name: str) -> tuple[dict | None, str | None, str | None]:
+    """GET /repos/{owner}/{name}. Metadatos públicos como github_create_repo."""
+    import httpx
+
+    try:
+        res = httpx.get(
+            f"{GITHUB_API}/repos/{owner}/{name}", headers=_github_headers(token), timeout=20.0,
+        )
+    except httpx.HTTPError as exc:
+        return None, "github_unreachable", f"No se pudo contactar con GitHub ({type(exc).__name__})."
+    if res.status_code == 200:
+        data = res.json()
+        return {
+            "full_name": data.get("full_name"),
+            "html_url": data.get("html_url"),
+            "clone_url": data.get("clone_url"),
+            "private": bool(data.get("private")),
+        }, None, None
+    if res.status_code == 404:
+        return None, "github_repo_not_found", f"No se encontró el repo '{owner}/{name}' en GitHub."
+    if res.status_code == 401:
+        return None, "github_token_invalid", "GitHub rechazó el token (inválido, revocado o caducado)."
+    return None, "github_error", f"GitHub respondió {res.status_code} al leer el repo."

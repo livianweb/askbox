@@ -9,7 +9,9 @@ Plantilla reutilizable: copia este skill a `.cursor/skills/` en tu proyecto y en
 
 ## Objetivo
 
-Clasificar cada tarea en vía **plan** o vía **directa** antes de tocar código; cerrar diseño con un **Task planificador** cuando corresponda; delegar implementación; verificar con build/tests. El **padre en Auto** orquesta todo **sin** pedir aprobación del plan al usuario. La elección de modelo usa **niveles de capacidad** y resolución dinámica al catálogo de la sesión (ver `auto-orchestrator.mdc`).
+Clasificar cada tarea en vía **plan** o vía **directa** antes de tocar código; cerrar diseño con un **Task planificador** cuando corresponda; delegar implementación; verificar con build/tests. El **padre en Auto** orquesta todo **sin** pedir aprobación del plan al usuario.
+
+**Modelos:** el usuario **no** elige modelo ni especialidad. El padre asigna **tipo de tarea → nivel → slug** consultando `available_subagent_models` (política completa en `auto-orchestrator.mdc` § «Elección de modelo»). **Ahorro:** Composer por defecto en `fast`/`balanced`; especialidades (UI, escritura) solo si el tipo lo justifica y el slug está en catálogo; escalar a `strong`/`strong-thinking` o proveedores caros solo cuando la complejidad lo exige.
 
 ## Flujo por defecto
 
@@ -26,7 +28,7 @@ Al terminar el plan: el padre **continúa solo** a implementación; no hay paso 
 | Nivel | Uso |
 |-------|-----|
 | **`fast`** | Explore, búsquedas, checks puntuales, status |
-| **`balanced`** | Implementación mecánica, migraciones, boilerplate, tests |
+| **`balanced`** | Implementación mecánica, migraciones, boilerplate, tests; fallback UI/docs |
 | **`strong`** | Plan feature media, diseño API/DB/auth |
 | **`strong-thinking`** | Plan greenfield/alta complejidad, seguridad, multi-tenant, integraciones externas, review de alto riesgo |
 
@@ -37,7 +39,7 @@ El padre clasifica la tarea **antes** de tocar código (criterio completo en `au
 - **Vía plan** → greenfield, varias capas (API+BD+auth+UI), arquitectura/seguridad/multi-tenant/integraciones externas, alcance ambiguo o >~1 día, contratos públicos o migraciones no triviales.
 - **Vía directa** → bugfix acotado, spec ya cerrada con paths claros, un solo módulo sin diseño abierto, o follow-up mecánico de un plan ya ejecutado en la conversación.
 - **Regla dura:** si hay duda, **planificar** (rehacer sale más caro que un plan corto).
-- El padre **anuncia** la decisión (`plan` | `directo`) junto con nivel + slug de cada subagente, antes de lanzar Tasks.
+- El padre **anuncia** la decisión (`plan` | `directo`) y, por cada subagente, **tipo de tarea + nivel + slug** (y excepción fuera de Composer si aplica). **No** pedir opinión al usuario sobre modelos.
 
 ## Fase 1 — Plan (Task planificador, no el padre entero)
 
@@ -47,7 +49,7 @@ El padre clasifica la tarea **antes** de tocar código (criterio completo en `au
 - Entregable: alcance, archivos a tocar, contratos (API, esquema), migraciones, riesgos, tareas **independientes** para implementadores.
 - **Sin código de producto** en esta fase salvo borradores (SQL, OpenAPI) si acotan el diseño.
 
-### Complejidad → nivel del planificador (el padre elige; el usuario no)
+### Complejidad → nivel del planificador (solo el padre elige)
 
 | Complejidad | Ejemplos | Nivel |
 |-------------|----------|-------|
@@ -57,7 +59,7 @@ El padre clasifica la tarea **antes** de tocar código (criterio completo en `au
 
 **Señales de complejidad:** número de servicios/capas afectados; auth y permisos; cifrado y secretos; multi-tenant; integraciones externas; greenfield frente a cambio puntual.
 
-Tras elegir el nivel, el padre **resuelve el slug** contra `available_subagent_models` y **informa al usuario**: nivel + slug del planificador (y lo mismo para cada Task posterior).
+Tras elegir el nivel, el padre **resuelve el slug** contra `available_subagent_models` y **informa**: tipo de tarea (planificador), nivel, slug (+ excepción si no es Composer). Igual para cada Task posterior.
 
 ## Fase 1b — Directo (sin Task planificador dedicado)
 
@@ -76,18 +78,22 @@ Tras elegir el nivel, el padre **resuelve el slug** contra `available_subagent_m
 - **Paralelo** solo con allowlists **disjuntas**; no un solo Task "haz todo el repo".
 - Entregable del subagente: diff resumido, rutas, cómo probar — no volcado masivo.
 
-### Niveles por tipo de trabajo
+### Tipo de trabajo → nivel y subagente
 
-| Tipo | Nivel | Subagente |
-|------|-------|-----------|
+El padre elige **subagente** (`explore`, `generalPurpose`, `bugbot`, etc.) y **nivel** según el tipo; luego **slug** en catálogo (`auto-orchestrator.mdc`):
+
+| Tipo de tarea | Nivel | Subagente |
+|---------------|-------|-----------|
 | Implementación según plan | **`balanced`** | `generalPurpose` |
 | Tests, migraciones, boilerplate | **`balanced`** | `generalPurpose` |
+| UI, maquetación, frontend visual | visual en catálogo si existe; si no **`balanced`** | `generalPurpose` |
+| Docs, redacción, changelogs | escritura en catálogo si existe; si no **`balanced`** | `generalPurpose` |
 | Búsqueda / mapa de estructura | **`fast`** | `explore` |
 | Lecturas largas / muchos ficheros | **`fast`** | `explore` |
-| Revisión crítica (si riesgo alto y el usuario pide review) | **`strong-thinking`** | `bugbot` / `security-review` |
+| Revisión crítica (usuario pide review) | **`strong-thinking`** | `bugbot` / `security-review` |
 | Verificación rápida de comandos | **`fast`** | `generalPurpose` |
 
-Resolver cada nivel al mejor slug de la sesión (criterios en `auto-orchestrator.mdc`).
+Al lanzar cada Task: anunciar **tipo + nivel + slug**; excepción Composer solo si se usó otro proveedor por especialidad o complejidad.
 
 ### Ownership y paralelismo
 
@@ -127,5 +133,5 @@ confundir con la Fase 3: primero build/tests/health en verde, **luego** commit/p
 
 ## Comunicación
 
-- Resumen final en el idioma acordado con el usuario: qué se hizo, **nivel + slug** usado por agente, decisión (`plan`|`directo`), cómo probar, pendientes.
-- **No** solicitar aprobación del plan intermedio.
+- Resumen final en el idioma acordado con el usuario: qué se hizo, decisión (`plan`|`directo`), por agente **tipo de tarea + nivel + slug** (y excepción Composer si hubo), cómo probar, pendientes.
+- **No** solicitar aprobación del plan intermedio ni **consultar** qué modelo prefiere el usuario.

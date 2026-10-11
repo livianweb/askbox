@@ -10,8 +10,22 @@ Copia esta regla a `.cursor/rules/` en **cualquier repositorio** y adáptala (ru
 ## Rol del padre
 
 - El agente **padre** corre en modo **Auto** y se encarga de **todo**: planificación, delegación, integración y verificación.
-- El usuario **no** aprueba el plan ni elige el modelo del planificador; el padre decide y **continúa solo** tras el plan.
-- Al lanzar cada subagente (planificador, implementadores, explore, review), el padre **anuncia al usuario**: **nivel de capacidad** elegido **y** el **slug concreto** resuelto en esa sesión (véase mapeo en runtime).
+- El usuario **no** aprueba el plan, **no** elige modelo ni especialidad; el padre decide y **continúa solo** tras el plan.
+- Al lanzar cada subagente, el padre **anuncia al usuario** (sin pedir opinión): **tipo de tarea** (breve), **nivel de capacidad**, **slug** resuelto en la sesión y, si aplica, **excepción fuera de Composer** (motivo de una línea).
+
+## Elección de modelo (solo el padre)
+
+1. El usuario **nunca** elige modelo, nivel ni especialidad. **No** ofrecer menú de modelos ni consultar preferencias.
+2. Al lanzar cada `Task`, el padre identifica el **tipo de tarea**, asigna un **nivel** (`fast` / `balanced` / `strong` / `strong-thinking`), consulta **`available_subagent_models`** (o equivalente de la sesión) y elige el **mejor match** entre los slugs permitidos.
+3. **Heurística orientativa** — adaptar al catálogo actual; los nombres de familia son ilustrativos, **no** listas fijas de slugs:
+   - **Explore, status, checks puntuales, verificación rápida de comandos** → `fast`; preferir variante *fast* de Composer u homólogo ligero/barato del catálogo.
+   - **Implementación de código mecánica** (según plan, migraciones, boilerplate, tests) → `balanced`; preferir Composer por coste.
+   - **UI, maquetación, frontend visual** → si el catálogo incluye familia orientada a visual/UI (p. ej. Gemini *flash-high* u homólogo), usarla; si no, `balanced` con Composer.
+   - **Docs, redacción, changelogs, copy** → si hay familia orientada a escritura (p. ej. Grok/GPT *medium* u homólogo), usarla; si no, Composer `balanced`.
+   - **Plan, arquitectura, seguridad, multi-tenant, integraciones críticas** → `strong` o `strong-thinking` según complejidad (véase abajo).
+   - **Revisión de alto riesgo** (Bugbot / security-review) → solo si el usuario lo pide explícitamente; nivel `strong-thinking`.
+4. **Ahorro de coste:** no escalar a Claude/GPT/Gemini caros si Composer basta para el nivel asignado. Especialidades (visual, escritura) **solo** cuando el tipo de tarea lo justifica **y** el slug está en el catálogo de la sesión.
+5. Los slugs de Cursor **cambian**; no mantener en reglas tablas normativas de slugs. Ejemplos en chat solo como ilustración.
 
 ## Plan vs. directo (heurística del padre)
 
@@ -39,17 +53,17 @@ El padre planifica en cabeza (unas líneas internas, sin Task aparte) y delega a
 
 - **Si hay duda → planificar.** Rehacer trabajo mal diseñado cuesta más que un plan corto.
 - Tras recibir el plan del Task: **no pedir OK** al usuario; pasar directo a implementación (Tasks en paralelo cuando proceda), verify e informe final.
-- **Anunciar siempre** al usuario, al iniciar el trabajo: la **decisión** (`plan` | `directo`), el **nivel de capacidad** y el **slug resuelto** en la sesión para cada subagente lanzado.
-- Mantener los niveles **genéricos** (`fast`/`balanced`/`strong`/`strong-thinking`); no fijar tablas normativas de slugs en las rules — los slugs cambian, se resuelven en runtime (ver "Mapeo en runtime" abajo).
+- **Anunciar siempre** al iniciar trabajo o al lanzar cada subagente: decisión **`plan` | `directo`** (cuando aplique), **tipo de tarea**, **nivel**, **slug** y **excepción fuera de Composer** si hubo.
+- Mantener los niveles **genéricos** (`fast`/`balanced`/`strong`/`strong-thinking`); la resolución al slug concreto es siempre en runtime (sección anterior).
 
 ## Niveles de capacidad (roles)
 
-Los niveles son **estables**; los slugs de modelos en Cursor **cambian** con el tiempo. El padre asigna un nivel por subagente y luego resuelve el mejor slug disponible.
+Los niveles son **estables**; los slugs **cambian**. El padre asigna nivel por subagente y resuelve slug con la heurística de «Elección de modelo».
 
 | Nivel | Uso típico |
 |-------|------------|
 | **`fast`** | Explore, búsquedas en código, checks puntuales, status, verificación rápida de comandos |
-| **`balanced`** | Implementación mecánica según plan, migraciones, boilerplate, tests |
+| **`balanced`** | Implementación mecánica según plan, migraciones, boilerplate, tests; fallback UI/docs si no hay especialidad en catálogo |
 | **`strong`** | Plan de feature de complejidad media, diseño API/DB/auth, coordinación multi-archivo |
 | **`strong-thinking`** | Plan greenfield o alta complejidad, seguridad, multi-tenant, routing LLM, revisión de alto riesgo (Bugbot / security-review cuando el usuario lo pida) |
 
@@ -63,27 +77,24 @@ Evaluar con señales: número de servicios/capas afectados; auth y permisos; cif
 | **Media** | API + DB + auth, varios archivos coordinados | **`strong`** |
 | **Alta** | Multi-tenant, routing LLM, seguridad, varios servicios | **`strong-thinking`** |
 
-### Otros subagentes (misma lógica de niveles)
+### Otros subagentes (misma lógica de niveles y tipos)
 
-| Rol | Nivel habitual |
-|-----|----------------|
+| Rol / tipo de tarea | Nivel habitual |
+|---------------------|----------------|
 | Implementación según plan | **`balanced`** |
 | Tests, migraciones, boilerplate | **`balanced`** |
+| UI / maquetación / frontend visual | especialidad visual si está en catálogo; si no **`balanced`** |
+| Docs / redacción / changelogs | especialidad escritura si está en catálogo; si no **`balanced`** |
 | Exploración / mapa de código (`explore`) | **`fast`** |
-| Lecturas largas / muchos ficheros (`explore`) | **`fast`** (priorizar contexto amplio si el catálogo de la sesión lo ofrece) |
-| Revisión crítica si riesgo alto y el usuario pide review | **`strong-thinking`** |
+| Lecturas largas / muchos ficheros (`explore`) | **`fast`** |
+| Revisión crítica (usuario pide review) | **`strong-thinking`** |
 
-## Mapeo en runtime (sin slugs como verdad normativa)
+## Resolución en runtime (resumen)
 
-1. El padre consulta el **catálogo de modelos disponibles en la sesión** (`available_subagent_models` o la lista equivalente que exponga Cursor).
-2. Para cada nivel, elige el **mejor match** entre los slugs permitidos para subagentes (respetar restricciones del usuario si pidió un modelo concreto).
-3. Criterios orientativos al resolver (no son nombres fijos):
-   - **`strong-thinking`**: preferir variantes *thinking* / razonamiento profundo entre las disponibles.
-   - **`fast`**: preferir variantes *fast* o equivalentes ligeros.
-   - **`balanced`**: preferir modelos equilibrados (p. ej. familias sonnet/composer u homólogos actuales).
-   - **`strong`**: capacidad alta sin exigir thinking salvo que la tarea lo justifique.
-4. **No** mantener en reglas listas obligatorias de slugs; si hace falta un ejemplo puntual en chat, citarlo solo como ilustración no normativa.
-5. Al lanzar el agente: comunicar **nivel + slug resuelto** (no solo el slug).
+1. Consultar **`available_subagent_models`** de la sesión.
+2. Aplicar **tipo de tarea → nivel** (tablas y heurística arriba).
+3. Elegir slug: **Composer primero** en `fast`/`balanced` salvo que el tipo pida especialidad y exista en catálogo; en `strong`/`strong-thinking`, la variante más capaz disponible (thinking/razonamiento si la tarea lo exige).
+4. Si el slug elegido **no** es Composer, marcar **excepción** al anunciar (p. ej. «UI → flash-high», «planificador strong-thinking», «sin composer en catálogo»).
 
 ## Delegación y disco
 

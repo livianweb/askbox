@@ -1,29 +1,33 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "../../../lib/api";
 
-export default function GitSettings() {
+const PRIMARY_REPO = "askbox";
+
+function repoQuery(repo) {
+  return `?repo=${encodeURIComponent(repo || PRIMARY_REPO)}`;
+}
+
+function GitSettingsInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const selectedRepo = searchParams.get("repo") || PRIMARY_REPO;
+
   const [status, setStatus] = useState(null);
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
 
-  // Preferencias (formulario controlado tras cargar el estado)
   const [autoCommit, setAutoCommit] = useState(true);
   const [remoteName, setRemoteName] = useState("origin");
   const [visibility, setVisibility] = useState("private");
 
-  // Conectar remoto existente
   const [remoteUrl, setRemoteUrl] = useState("");
 
-  // Crear remoto con gh
   const [slug, setSlug] = useState("");
   const [createVisibility, setCreateVisibility] = useState("private");
   const [pushNow, setPushNow] = useState(false);
 
-  // GitHub token (solo se escribe; el servidor nunca lo devuelve)
-  const [repo, setRepo] = useState("");
   const [tokenInput, setTokenInput] = useState("");
   const [loading, setLoading] = useState(false);
   const reqId = useRef(0);
@@ -31,9 +35,9 @@ export default function GitSettings() {
   const load = useCallback(() => {
     const id = ++reqId.current;
     setLoading(true);
-    api(`/v1/settings/git/status${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`)
+    api(`/v1/settings/git/status${repoQuery(selectedRepo)}`)
       .then((s) => {
-        if (id !== reqId.current) return; // respuesta de un repo anterior: descartar
+        if (id !== reqId.current) return;
         setStatus(s);
         setLoading(false);
         if (s.preferences) {
@@ -47,32 +51,38 @@ export default function GitSettings() {
         if (id !== reqId.current) return;
         setLoading(false);
         if (e.status === 401) router.replace("/login");
-        else setError(e.message);
+        else if (e.status === 404 && e.code === "repo_not_found") {
+          router.replace("/settings/git", { scroll: false });
+        } else setError(e.message);
       });
-  }, [router, repo]);
+  }, [router, selectedRepo]);
 
   useEffect(() => { load(); }, [load]);
 
-  const q = repo ? `?repo=${encodeURIComponent(repo)}` : "";
-  // Repo efectivo del selector (el token es por repositorio)
-  const currentRepo = repo || status?.repo || "askbox";
-  const tokenQ = `?repo=${encodeURIComponent(currentRepo)}`;
+  const q = repoQuery(selectedRepo);
 
   function changeRepo(next) {
-    setRepo(next);
-    setTokenInput(""); // no arrastrar un PAT a otro repo
-    setError(""); setMsg("");
-    // el estado del token del repo anterior no debe mostrarse mientras carga el nuevo
+    ++reqId.current; // invalida peticiones en vuelo del repo anterior
+    setTokenInput("");
+    setError("");
+    setMsg("");
     setStatus((s) => (s ? { ...s, github_token_configured: undefined, github_token_last4: undefined } : s));
+    const qs = new URLSearchParams(searchParams.toString());
+    if (next === PRIMARY_REPO) qs.delete("repo");
+    else qs.set("repo", next);
+    const suffix = qs.toString();
+    router.replace(suffix ? `/settings/git?${suffix}` : "/settings/git", { scroll: false });
   }
 
   async function saveToken(e) {
     e.preventDefault();
-    setError(""); setMsg("");
+    setError("");
+    setMsg("");
     try {
-      await api(`/v1/settings/git/github-token${tokenQ}`, { method: "PUT", body: { token: tokenInput } });
-      setTokenInput(""); // no conservar el PAT en el estado del navegador
-      setMsg(`GitHub token de "${currentRepo}" guardado (cifrado en el servidor).`);
+      const meta = await api(`/v1/settings/git/github-token${q}`, { method: "PUT", body: { token: tokenInput } });
+      setTokenInput("");
+      setStatus((s) => (s ? { ...s, ...meta } : s));
+      setMsg(`GitHub token de "${selectedRepo}" guardado (cifrado en el servidor).`);
       load();
     } catch (err) {
       setError(err.message);
@@ -80,10 +90,12 @@ export default function GitSettings() {
   }
 
   async function deleteToken() {
-    setError(""); setMsg("");
+    setError("");
+    setMsg("");
     try {
-      await api(`/v1/settings/git/github-token${tokenQ}`, { method: "DELETE" });
-      setMsg(`GitHub token de "${currentRepo}" borrado.`);
+      const meta = await api(`/v1/settings/git/github-token${q}`, { method: "DELETE" });
+      setStatus((s) => (s ? { ...s, ...meta, github_token_last4: undefined } : s));
+      setMsg(`GitHub token de "${selectedRepo}" borrado.`);
       load();
     } catch (err) {
       setError(err.message);
@@ -91,7 +103,8 @@ export default function GitSettings() {
   }
 
   async function pushRemote() {
-    setError(""); setMsg("");
+    setError("");
+    setMsg("");
     try {
       await api(`/v1/settings/git/push${q}`, { method: "POST", body: {} });
       setMsg("Push realizado.");
@@ -103,7 +116,8 @@ export default function GitSettings() {
 
   async function savePreferences(e) {
     e.preventDefault();
-    setError(""); setMsg("");
+    setError("");
+    setMsg("");
     try {
       await api("/v1/settings/git/preferences", {
         method: "PATCH",
@@ -118,10 +132,11 @@ export default function GitSettings() {
 
   async function connectRemote(e) {
     e.preventDefault();
-    setError(""); setMsg("");
+    setError("");
+    setMsg("");
     try {
-      await api("/v1/settings/git/remote" + q, { method: "POST", body: { name: remoteName, url: remoteUrl } });
-      setRemoteUrl(""); // no conservar en el formulario (puede llevar credenciales embebidas)
+      await api(`/v1/settings/git/remote${q}`, { method: "POST", body: { name: remoteName, url: remoteUrl } });
+      setRemoteUrl("");
       setMsg("Remoto conectado.");
       load();
     } catch (err) {
@@ -131,9 +146,10 @@ export default function GitSettings() {
 
   async function createRemote(e) {
     e.preventDefault();
-    setError(""); setMsg("");
+    setError("");
+    setMsg("");
     try {
-      const res = await api("/v1/settings/git/remote" + q, {
+      const res = await api(`/v1/settings/git/remote${q}`, {
         method: "POST",
         body: { name: remoteName, create: true, slug: slug || undefined, visibility: createVisibility, push: pushNow },
       });
@@ -153,6 +169,8 @@ export default function GitSettings() {
     );
   }
 
+  const displayRepo = status.repos?.includes(selectedRepo) ? selectedRepo : status.repo || PRIMARY_REPO;
+
   return (
     <div>
       <h2>Configuración Git</h2>
@@ -166,7 +184,7 @@ export default function GitSettings() {
         <div className="card">
           <label>
             Repositorio
-            <select value={currentRepo} onChange={(e) => changeRepo(e.target.value)}>
+            <select value={displayRepo} onChange={(e) => changeRepo(e.target.value)}>
               {status.repos.map((r) => <option key={r} value={r}>{r}</option>)}
             </select>
           </label>
@@ -174,7 +192,7 @@ export default function GitSettings() {
       )}
 
       <div className="card">
-        <h4>Token de este repositorio: <code>{currentRepo}</code></h4>
+        <h4>Token de este repositorio: <code>{displayRepo}</code></h4>
         <p>
           Estado:{" "}
           {loading || status.github_token_configured === undefined ? (
@@ -188,7 +206,7 @@ export default function GitSettings() {
         </p>
         <form onSubmit={saveToken}>
           <label>
-            Personal Access Token para «{currentRepo}» (permiso de crear repos y escribir contenido)
+            Personal Access Token para «{displayRepo}» (permiso de crear repos y escribir contenido)
             <input
               type="password"
               placeholder="Pega aquí tu token de GitHub"
@@ -198,7 +216,7 @@ export default function GitSettings() {
               required
             />
           </label>
-          <small className="muted">Solo se usa para «{currentRepo}» (crear remoto y push). Se cifra al guardar y no vuelve a salir del servidor. Guardar de nuevo lo reemplaza.</small>
+          <small className="muted">Solo se usa para «{displayRepo}» (crear remoto y push). Se cifra al guardar y no vuelve a salir del servidor. Guardar de nuevo lo reemplaza.</small>
           <div className="row">
             <button disabled={loading}>{status.github_token_configured ? "Reemplazar token" : "Guardar token"}</button>
             {status.github_token_configured && (
@@ -310,5 +328,20 @@ export default function GitSettings() {
       {msg && <p className="ok">{msg}</p>}
       {error && <p className="err">{error}</p>}
     </div>
+  );
+}
+
+export default function GitSettings() {
+  return (
+    <Suspense
+      fallback={
+        <div>
+          <h2>Configuración Git</h2>
+          <p className="muted">Cargando…</p>
+        </div>
+      }
+    >
+      <GitSettingsInner />
+    </Suspense>
   );
 }
