@@ -44,7 +44,7 @@ export default function Register() {
     <div className="auth-container">
       <form className="card" onSubmit={submit}>
         <div style={{ textAlign: "center", marginBottom: "1.25rem" }}>
-          <BrandLogo size={48} className="auth-brand-logo" />
+          <BrandLogo size={144} className="auth-brand-logo" />
           <h2>Crear Cuenta</h2>
           <p className="muted" style={{ margin: 0 }}>
             Configura el acceso a tu pasarela askbox
