@@ -11,7 +11,7 @@ Plantilla reutilizable: copia este skill a `.cursor/skills/` en tu proyecto y en
 
 Clasificar cada tarea en vía **plan** o vía **directa** antes de tocar código; cerrar diseño con un **Task planificador** cuando corresponda; delegar implementación; verificar con build/tests. El **padre en Auto** orquesta todo **sin** pedir aprobación del plan al usuario.
 
-**Modelos:** el usuario **no** elige modelo ni especialidad. El padre asigna **tipo de tarea → nivel → slug** consultando `available_subagent_models` (política completa en `auto-orchestrator.mdc` § «Elección de modelo»). **Ahorro:** Composer por defecto en `fast`/`balanced`; especialidades (UI, escritura) solo si el tipo lo justifica y el slug está en catálogo; escalar a `strong`/`strong-thinking` o proveedores caros solo cuando la complejidad lo exige.
+**Modelos:** el usuario **no** elige modelo ni especialidad. Para **UI/visual** y **copy/docs**, si está instalado `askbox-first`, el padre usa primero **askbox** (`POST /v1/ask`) y solo entonces Cursor. En el resto (y en fallback), asigna **tipo de tarea → nivel → slug** con `available_subagent_models` (`auto-orchestrator.mdc` § «Elección de modelo»). **Ahorro:** askbox-first en UI/copy; Composer por defecto en `fast`/`balanced`; especialidades Cursor solo si askbox falló o no aplica; escalar a `strong`/`strong-thinking` solo cuando la complejidad lo exige.
 
 ## Flujo por defecto
 
@@ -39,7 +39,7 @@ El padre clasifica la tarea **antes** de tocar código (criterio completo en `au
 - **Vía plan** → greenfield, varias capas (API+BD+auth+UI), arquitectura/seguridad/multi-tenant/integraciones externas, alcance ambiguo o >~1 día, contratos públicos o migraciones no triviales.
 - **Vía directa** → bugfix acotado, spec ya cerrada con paths claros, un solo módulo sin diseño abierto, o follow-up mecánico de un plan ya ejecutado en la conversación.
 - **Regla dura:** si hay duda, **planificar** (rehacer sale más caro que un plan corto).
-- El padre **anuncia** la decisión (`plan` | `directo`) y, por cada subagente, **tipo de tarea + nivel + slug** (y excepción fuera de Composer si aplica). **No** pedir opinión al usuario sobre modelos.
+- El padre **anuncia** la decisión (`plan` | `directo`) y, por cada subfase o subagente, **vía** (`askbox` | `Cursor`) + **tipo de tarea**; si es Cursor, **nivel + slug** (y excepción fuera de Composer si aplica). Ver `askbox-first` para el formato. **No** pedir opinión al usuario sobre modelos.
 
 ## Fase 1 — Plan (Task planificador, no el padre entero)
 
@@ -86,14 +86,14 @@ El padre elige **subagente** (`explore`, `generalPurpose`, `bugbot`, etc.) y **n
 |---------------|-------|-----------|
 | Implementación según plan | **`balanced`** | `generalPurpose` |
 | Tests, migraciones, boilerplate | **`balanced`** | `generalPurpose` |
-| UI, maquetación, frontend visual | visual en catálogo si existe; si no **`balanced`** | `generalPurpose` |
-| Docs, redacción, changelogs | escritura en catálogo si existe; si no **`balanced`** | `generalPurpose` |
+| UI, maquetación, frontend visual | **askbox-first** (`askbox-first`); fallback: visual o **`balanced`** | `generalPurpose` (tras propuesta askbox o si fallback) |
+| Docs, redacción, changelogs | **askbox-first**; fallback: escritura o **`balanced`** | `generalPurpose` (idem) |
 | Búsqueda / mapa de estructura | **`fast`** | `explore` |
 | Lecturas largas / muchos ficheros | **`fast`** | `explore` |
 | Revisión crítica (usuario pide review) | **`strong-thinking`** | `bugbot` / `security-review` |
 | Verificación rápida de comandos | **`fast`** | `generalPurpose` |
 
-Al lanzar cada Task: anunciar **tipo + nivel + slug**; excepción Composer solo si se usó otro proveedor por especialidad o complejidad.
+Al usar askbox: anunciar **Askbox-first — tipo — tier**; al lanzar cada Task Cursor: **Cursor — tipo + nivel + slug**; excepción Composer solo si se usó otro proveedor por especialidad o complejidad.
 
 ### Ownership y paralelismo
 
@@ -133,5 +133,5 @@ confundir con la Fase 3: primero build/tests/health en verde, **luego** commit/p
 
 ## Comunicación
 
-- Resumen final en el idioma acordado con el usuario: qué se hizo, decisión (`plan`|`directo`), por agente **tipo de tarea + nivel + slug** (y excepción Composer si hubo), cómo probar, pendientes.
+- Resumen final en el idioma acordado con el usuario: qué se hizo, decisión (`plan`|`directo`), qué bloques usaron **askbox** vs **Cursor** (tipo + nivel + slug si Cursor), cómo probar, pendientes.
 - **No** solicitar aprobación del plan intermedio ni **consultar** qué modelo prefiere el usuario.

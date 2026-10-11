@@ -11,7 +11,18 @@ Copia esta regla a `.cursor/rules/` en **cualquier repositorio** y adáptala (ru
 
 - El agente **padre** corre en modo **Auto** y se encarga de **todo**: planificación, delegación, integración y verificación.
 - El usuario **no** aprueba el plan, **no** elige modelo ni especialidad; el padre decide y **continúa solo** tras el plan.
-- Al lanzar cada subagente, el padre **anuncia al usuario** (sin pedir opinión): **tipo de tarea** (breve), **nivel de capacidad**, **slug** resuelto en la sesión y, si aplica, **excepción fuera de Composer** (motivo de una línea).
+- Al lanzar cada subagente, el padre **anuncia al usuario** (sin pedir opinión): **vía** (`askbox` | `Cursor`), **tipo de tarea** (breve), y si es Cursor: **nivel de capacidad**, **slug** resuelto en la sesión y, si aplica, **excepción fuera de Composer** (motivo de una línea). Formato detallado en `.cursor/skills/askbox-first/SKILL.md`.
+
+## Askbox-first (UI y copy)
+
+Si `.cursor/skills/askbox-first/SKILL.md` está instalado, **antes** de gastar subagentes Cursor en:
+
+- **UI / maquetación / temas visuales / ayuda frontend**, o
+- **copy / legibilidad / documentación** (README, changelogs, textos de UI),
+
+el padre intenta **una pasada** vía `POST /v1/ask` (tiers `fast` / `balanced` / `auto` según la skill). Askbox **propone**; Cursor **implementa** en el repo y hace Verify.
+
+Si askbox no está configurado, falla (429/502/agotado), la salida no pasa el check breve de la skill, o el usuario rechaza el resultado → **fallback** a la heurística Cursor de abajo, anunciando el motivo.
 
 ## Elección de modelo (solo el padre)
 
@@ -20,8 +31,8 @@ Copia esta regla a `.cursor/rules/` en **cualquier repositorio** y adáptala (ru
 3. **Heurística orientativa** — adaptar al catálogo actual; los nombres de familia son ilustrativos, **no** listas fijas de slugs:
    - **Explore, status, checks puntuales, verificación rápida de comandos** → `fast`; preferir variante *fast* de Composer u homólogo ligero/barato del catálogo.
    - **Implementación de código mecánica** (según plan, migraciones, boilerplate, tests) → `balanced`; preferir Composer por coste.
-   - **UI, maquetación, frontend visual** → si el catálogo incluye familia orientada a visual/UI (p. ej. Gemini *flash-high* u homólogo), usarla; si no, `balanced` con Composer.
-   - **Docs, redacción, changelogs, copy** → si hay familia orientada a escritura (p. ej. Grok/GPT *medium* u homólogo), usarla; si no, Composer `balanced`.
+   - **UI, maquetación, frontend visual** → **askbox-first** si la skill está instalada; en fallback Cursor: especialidad visual en catálogo si existe; si no, `balanced` con Composer.
+   - **Docs, redacción, changelogs, copy** → **askbox-first** si la skill está instalada; en fallback Cursor: especialidad escritura si existe; si no, Composer `balanced`.
    - **Plan, arquitectura, seguridad, multi-tenant, integraciones críticas** → `strong` o `strong-thinking` según complejidad (véase abajo).
    - **Revisión de alto riesgo** (Bugbot / security-review) → solo si el usuario lo pide explícitamente; nivel `strong-thinking`.
 4. **Ahorro de coste:** no escalar a Claude/GPT/Gemini caros si Composer basta para el nivel asignado. Especialidades (visual, escritura) **solo** cuando el tipo de tarea lo justifica **y** el slug está en el catálogo de la sesión.
@@ -53,7 +64,7 @@ El padre planifica en cabeza (unas líneas internas, sin Task aparte) y delega a
 
 - **Si hay duda → planificar.** Rehacer trabajo mal diseñado cuesta más que un plan corto.
 - Tras recibir el plan del Task: **no pedir OK** al usuario; pasar directo a implementación (Tasks en paralelo cuando proceda), verify e informe final.
-- **Anunciar siempre** al iniciar trabajo o al lanzar cada subagente: decisión **`plan` | `directo`** (cuando aplique), **tipo de tarea**, **nivel**, **slug** y **excepción fuera de Composer** si hubo.
+- **Anunciar siempre** al iniciar trabajo o al lanzar cada subagente: decisión **`plan` | `directo`** (cuando aplique), **vía** (`askbox` | `Cursor`), **tipo de tarea**, y si es Cursor **nivel**, **slug** y **excepción fuera de Composer** si hubo.
 - Mantener los niveles **genéricos** (`fast`/`balanced`/`strong`/`strong-thinking`); la resolución al slug concreto es siempre en runtime (sección anterior).
 
 ## Niveles de capacidad (roles)
@@ -83,8 +94,8 @@ Evaluar con señales: número de servicios/capas afectados; auth y permisos; cif
 |---------------------|----------------|
 | Implementación según plan | **`balanced`** |
 | Tests, migraciones, boilerplate | **`balanced`** |
-| UI / maquetación / frontend visual | especialidad visual si está en catálogo; si no **`balanced`** |
-| Docs / redacción / changelogs | especialidad escritura si está en catálogo; si no **`balanced`** |
+| UI / maquetación / frontend visual | **askbox-first**; fallback: visual en catálogo o **`balanced`** |
+| Docs / redacción / changelogs | **askbox-first**; fallback: escritura en catálogo o **`balanced`** |
 | Exploración / mapa de código (`explore`) | **`fast`** |
 | Lecturas largas / muchos ficheros (`explore`) | **`fast`** |
 | Revisión crítica (usuario pide review) | **`strong-thinking`** |
@@ -114,4 +125,4 @@ cómo publicar con `gh` si no hay remoto, y qué nunca se commitea (secretos).
 
 ## Flujo detallado
 
-Usar el skill `.cursor/skills/plan-implement-verify/SKILL.md` en este repositorio (o equivalente copiado) para fases Plan → Implement → Verify y hábitos de tokens. Tras Verify, aplicar `git-autopilot` si está instalado.
+Usar el skill `.cursor/skills/plan-implement-verify/SKILL.md` en este repositorio (o equivalente copiado) para fases Plan → Implement → Verify y hábitos de tokens. Para UI/copy, `.cursor/skills/askbox-first/SKILL.md`. Tras Verify, aplicar `git-autopilot` si está instalado.
