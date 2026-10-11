@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 
 from app.config import settings
@@ -27,12 +29,40 @@ async def lifespan(app: FastAPI):
     await app.state.pool.close()
 
 
-app = FastAPI(title="askbox API", lifespan=lifespan)
+def _public_openapi_url() -> str:
+    prefix = settings.api_external_prefix
+    return f"{prefix}/openapi.json" if prefix else "/openapi.json"
+
+
+app = FastAPI(title="askbox API", lifespan=lifespan, docs_url=None, redoc_url=None)
 app.include_router(auth.router)
 app.include_router(projects.router)
 app.include_router(ask.router)
 app.include_router(git_settings.router)
 app.include_router(deploy_settings.router)
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(title=app.title, version="0.1.0", routes=app.routes)
+    if settings.api_external_prefix:
+        schema["servers"] = [{"url": settings.api_external_prefix}]
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = custom_openapi
+
+
+@app.get("/docs", include_in_schema=False)
+async def swagger_ui():
+    return get_swagger_ui_html(openapi_url=_public_openapi_url(), title=f"{app.title} — Swagger")
+
+
+@app.get("/redoc", include_in_schema=False)
+async def redoc_ui():
+    return get_redoc_html(openapi_url=_public_openapi_url(), title=f"{app.title} — ReDoc")
 
 
 @app.exception_handler(HTTPException)

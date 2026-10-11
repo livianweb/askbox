@@ -53,6 +53,8 @@ class Settings:
 
     # Recuperación de contraseña
     public_url: str = (os.getenv("ASKBOX_PUBLIC_URL") or "http://localhost:8067").rstrip("/")
+    # Prefijo público de la API vía proxy web (/api/* → API). Vacío si accedes directo a :8066.
+    api_external_prefix: str = (os.getenv("ASKBOX_API_EXTERNAL_PREFIX") or "").rstrip("/")
     reset_ttl_minutes: int = _int("ASKBOX_RESET_TTL_MINUTES", 30)
     # Solo desarrollo local: devuelve reset_url en la respuesta de /forgot (NUNCA en producción).
     dev_show_reset_token: bool = _bool("ASKBOX_DEV_SHOW_RESET_TOKEN", False)

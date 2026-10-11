@@ -19,6 +19,7 @@ curl -s http://localhost:8066/ready    # db, redis y master_key
 
 - API: http://localhost:8066 (migraciones SQL automáticas al arrancar, `api/app/migrations/`)
 - Web: http://localhost:8067 (`/login`, `/register`, `/forgot`, `/reset`, `/projects`, `/playground`, `/settings/deploy`, `/settings/git`; proxy `/api/*` → API)
+- **OpenAPI (Swagger / ReDoc)** detrás de la web (mismo origen que la UI): [http://localhost:8067/api/docs](http://localhost:8067/api/docs), [http://localhost:8067/api/redoc](http://localhost:8067/api/redoc), esquema en `/api/openapi.json`. Con túnel: **https://askbox.softportweb.com/api/docs** (y `/api/redoc`, `/api/openapi.json`). Acceso directo al contenedor API en `:8066` sigue en `/docs` si `ASKBOX_API_EXTERNAL_PREFIX` está vacío.
 
 ### Clonar y usar sin túnel (por defecto)
 
