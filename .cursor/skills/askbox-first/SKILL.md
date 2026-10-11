@@ -1,6 +1,6 @@
 ---
 name: askbox-first
-description: Para maquetación/UI/visual y copy/docs/legibilidad, usar primero el gateway askbox (POST /v1/ask) con tiers gratuitos del keypool; si falla, no aprueba o se agotan modelos, fallback a subagentes Cursor (Composer preferido).
+description: Para maquetación/UI/visual y copy/docs/legibilidad, usar primero el gateway askbox (POST /v1/ask) con tiers gratuitos del keypool; si falla, no aprueba o se agotan modelos, fallback a subagentes Cursor con la heurística normal del orquestador (tipo → nivel → slug), no Composer genérico por defecto.
 ---
 
 # Askbox-first (UI y copy antes que Cursor de pago)
@@ -101,11 +101,15 @@ Usar subagentes Cursor (`Task` / trabajo del padre) cuando ocurra **cualquiera**
 - Resultado no aprobado tras el reintento permitido.
 - La tarea requiere **editar archivos** con ownership y verify: askbox solo **genera** propuestas; la escritura en disco sigue siendo Cursor (salvo que el padre aplique un diff pequeño él mismo).
 
-En fallback, aplicar `auto-orchestrator.mdc`:
+En fallback, **no** enviar todo a Composer genérico: **retomar el flujo Auto** como si askbox no hubiera sido opción — misma heurística que `auto-orchestrator.mdc` y `plan-implement-verify`:
 
-- UI/visual → nivel `balanced`, slug **Composer** si basta; especialidad visual del catálogo solo si Composer no cumple.
-- Copy/docs → `fast` o `balanced`, Composer; especialidad escritura si está en catálogo y hace falta.
-- Anunciar explícitamente el cambio de vía (ver abajo).
+1. Clasificar **tipo de tarea** y asignar **nivel** (`fast` / `balanced` / `strong` / `strong-thinking`) como en cualquier otro Task.
+2. Consultar **`available_subagent_models`** y elegir el **mejor slug** para ese tipo y nivel.
+3. **UI / maquetación / visual** → especialidad **visual** del catálogo si existe (p. ej. variantes flash-high); si no, **`balanced`** con Composer u homólogo del catálogo.
+4. **Copy / docs / legibilidad** → especialidad **escritura** del catálogo si existe; si no, **`fast`** o **`balanced`** con Composer según alcance del texto.
+5. **Composer** solo como **preferencia de ahorro dentro** de esa heurística (explore, implementación mecánica, etc.), no en lugar de especialidades cuando el tipo de tarea las pide y están en catálogo.
+
+Anunciar explícitamente el cambio de vía (ver abajo).
 
 ## Cómo debe anunciar el padre
 

@@ -11,7 +11,7 @@ Plantilla reutilizable: copia este skill a `.cursor/skills/` en tu proyecto y en
 
 Clasificar cada tarea en vía **plan** o vía **directa** antes de tocar código; cerrar diseño con un **Task planificador** cuando corresponda; delegar implementación; verificar con build/tests. El **padre en Auto** orquesta todo **sin** pedir aprobación del plan al usuario.
 
-**Modelos:** el usuario **no** elige modelo ni especialidad. Para **UI/visual** y **copy/docs**, si está instalado `askbox-first`, el padre usa primero **askbox** (`POST /v1/ask`) y solo entonces Cursor. En el resto (y en fallback), asigna **tipo de tarea → nivel → slug** con `available_subagent_models` (`auto-orchestrator.mdc` § «Elección de modelo»). **Ahorro:** askbox-first en UI/copy; Composer por defecto en `fast`/`balanced`; especialidades Cursor solo si askbox falló o no aplica; escalar a `strong`/`strong-thinking` solo cuando la complejidad lo exige.
+**Modelos:** el usuario **no** elige modelo ni especialidad. Para **UI/visual** y **copy/docs**, si está instalado `askbox-first`, el padre usa primero **askbox** (`POST /v1/ask`) y solo entonces Cursor. En el resto, y en **fallback** de askbox, asigna **tipo de tarea → nivel → slug** con `available_subagent_models` (`auto-orchestrator.mdc` § «Elección de modelo») — misma heurística que sin askbox, incluidas especialidades visual/escritura en UI/copy cuando estén en catálogo. **Ahorro:** askbox-first en UI/copy; Composer como preferencia dentro de esa heurística, no como único destino del fallback; escalar a `strong`/`strong-thinking` solo cuando la complejidad lo exige.
 
 ## Flujo por defecto
 
@@ -93,7 +93,7 @@ El padre elige **subagente** (`explore`, `generalPurpose`, `bugbot`, etc.) y **n
 | Revisión crítica (usuario pide review) | **`strong-thinking`** | `bugbot` / `security-review` |
 | Verificación rápida de comandos | **`fast`** | `generalPurpose` |
 
-Al usar askbox: anunciar **Askbox-first — tipo — tier**; al lanzar cada Task Cursor: **Cursor — tipo + nivel + slug**; excepción Composer solo si se usó otro proveedor por especialidad o complejidad.
+Al usar askbox: anunciar **Askbox-first — tipo — tier**; al lanzar cada Task Cursor (incluido fallback askbox): **Cursor — tipo + nivel + slug**; marcar excepción fuera de Composer cuando el slug elegido por la heurística no sea Composer (especialidad visual/escritura, `strong*`, etc.).
 
 ### Ownership y paralelismo
 
