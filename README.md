@@ -2,6 +2,8 @@
 
 Gateway LLM mono-usuario: `POST /v1/ask` con cascada Gemini → OpenRouter, claves cifradas (AES-256-GCM) y traza en PostgreSQL.
 
+Licencia [MIT](LICENSE).
+
 - **Fase 0**: andamiaje (API FastAPI, web Next.js, PostgreSQL, Redis, worker arq).
 - **Fase 1 (MVP)**: auth, proyectos, claves cifradas, `/v1/ask`, UI mínima.
 
