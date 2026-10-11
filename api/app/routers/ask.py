@@ -1,19 +1,14 @@
 from __future__ import annotations
 
-import hashlib
-import time
-from datetime import datetime, timezone
+import json
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
-from app import ratelimit
+from app import ask_exec, ratelimit
 from app.config import settings
 from app.deps import AskAuth, ask_auth, current_user, err
-from app.llm import router as llm_router
-from app.llm.errors import LLMError
-from app.prompt_render import PromptRenderError, render_template
-from app import usage as usage_agg
 from app.routers.projects import get_project
 
 router = APIRouter(prefix="/v1", tags=["ask"])
@@ -40,59 +35,7 @@ class AskIn(BaseModel):
         return self
 
 
-async def _log_request(pool, **f) -> str:
-    return str(await pool.fetchval(
-        "INSERT INTO requests(user_id, project_id, access_token_id, tier_requested, tier_used, status, provider, model_used, key_id, "
-        "key_source, prompt_chars, prompt_hash, response_chars, latency_ms, cache_hit, attempts, "
-        "input_tokens, output_tokens, estimated_cost_usd, error_code, error_message) "
-        "VALUES ($1,$2,$3::uuid,$4,$5,$6,$7,$8,$9::uuid,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id",
-        f["user_id"], f.get("project_id"), f.get("access_token_id"), f["tier_requested"], f.get("tier_used"), f["status"],
-        f.get("provider"), f.get("model_used"), f.get("key_id"), f.get("key_source"), f["prompt_chars"], f["prompt_hash"],
-        f.get("response_chars"), f.get("latency_ms"), f.get("cache_hit", False), f.get("attempts", 0),
-        f.get("input_tokens"), f.get("output_tokens"), f.get("estimated_cost_usd"),
-        f.get("error_code"), (f.get("error_message") or None) and f["error_message"][:500],
-    ))
-
-
-async def _resolve_messages(pool, project, body: AskIn) -> tuple[list[dict], str, str]:
-    """messages, user prompt text (for logging), effective tier hint from template."""
-    tier_hint = body.tier
-    if body.prompt_template and body.prompt_template.strip():
-        name = body.prompt_template.strip()
-        row = await pool.fetchrow(
-            "SELECT system_prompt, user_template, default_tier FROM project_prompts "
-            "WHERE project_id = $1 AND name = $2 ORDER BY version DESC LIMIT 1",
-            project["id"], name,
-        )
-        if not row:
-            raise err(404, "prompt_not_found", f"Plantilla «{name}» no encontrada en el proyecto.")
-        try:
-            user_text = render_template(row["user_template"], body.variables).strip()
-            system_text = render_template(row["system_prompt"], body.variables).strip() if row["system_prompt"] else ""
-        except PromptRenderError as exc:
-            raise err(422, "prompt_variables", str(exc)) from None
-        if body.system and body.system.strip():
-            system_text = body.system.strip()
-        if tier_hint == "auto" and row["default_tier"] != "auto":
-            tier_hint = row["default_tier"]
-    else:
-        user_text = (body.prompt or "").strip()
-        system_text = body.system.strip() if body.system and body.system.strip() else ""
-
-    if not user_text:
-        raise err(422, "empty_prompt", "El prompt no puede estar vacío.")
-
-    messages = []
-    if system_text:
-        messages.append({"role": "system", "content": system_text})
-    messages.append({"role": "user", "content": user_text})
-    return messages, user_text, tier_hint
-
-
-@router.post("/ask")
-async def ask(body: AskIn, request: Request, auth: AskAuth = Depends(ask_auth)):
-    pool, redis = request.app.state.pool, request.app.state.redis
-
+async def _prepare_ask(pool, redis, auth: AskAuth, body: AskIn):
     if auth.mode == "session":
         await ratelimit.check(redis, f"ask:{auth.user_id}", settings.ask_rate_per_min)
     if auth.access_token_id:
@@ -113,73 +56,71 @@ async def ask(body: AskIn, request: Request, auth: AskAuth = Depends(ask_auth)):
 
     await ratelimit.check(redis, f"ask:project:{project['id']}", settings.ask_rate_per_min)
 
-    messages, prompt, effective_tier = await _resolve_messages(pool, project, body)
+    messages, prompt, _effective_tier = await ask_exec.resolve_messages(
+        pool,
+        project,
+        prompt=body.prompt,
+        prompt_template=body.prompt_template,
+        variables=body.variables,
+        system=body.system,
+        tier=body.tier,
+    )
 
     if len(prompt) > settings.max_prompt_chars:
         raise err(413, "prompt_too_large", f"Prompt demasiado largo (máx {settings.max_prompt_chars} caracteres).")
     if body.max_output_tokens > settings.max_output_tokens_cap:
         raise err(422, "max_tokens_too_large", f"max_output_tokens máx {settings.max_output_tokens_cap}.")
 
-    base = dict(
+    return project, messages, prompt
+
+
+@router.post("/ask")
+async def ask(body: AskIn, request: Request, auth: AskAuth = Depends(ask_auth)):
+    pool, redis = request.app.state.pool, request.app.state.redis
+    project, messages, prompt = await _prepare_ask(pool, redis, auth, body)
+    return await ask_exec.run_ask(
+        pool,
+        redis,
+        project=project,
         user_id=auth.user_id,
-        project_id=project["id"],
         access_token_id=auth.access_token_id,
         tier_requested=body.tier,
-        prompt_chars=len(prompt),
-        prompt_hash=hashlib.sha256(prompt.encode()).hexdigest()[:16],
+        max_output_tokens=body.max_output_tokens,
+        messages=messages,
+        prompt=prompt,
+        json_schema=body.json_schema,
     )
-    started = time.monotonic()
-    tier_for_llm = effective_tier if body.tier == "auto" else body.tier
-    try:
-        res = await llm_router.ask(
-            pool, redis, project=dict(project), messages=messages,
-            tier=tier_for_llm, max_tokens=body.max_output_tokens, json_schema=body.json_schema,
-        )
-    except llm_router.AskFailure as exc:
-        latency_err = int((time.monotonic() - started) * 1000)
-        rid = await _log_request(pool, **base, status="error", tier_used=exc.tier_used, attempts=exc.attempts,
-                                 latency_ms=latency_err, error_code=exc.code, error_message=str(exc))
-        await usage_agg.record(pool, project_id=project["id"], ok=False, cache_hit=False)
-        raise err(502, exc.code, f"{exc} (request_id={rid})") from None
-    except LLMError as exc:
-        rid = await _log_request(pool, **base, status="error", latency_ms=int((time.monotonic() - started) * 1000),
-                                 error_code="llm_error", error_message=str(exc))
-        raise err(502, "llm_error", f"{exc} (request_id={rid})") from None
 
-    latency = int((time.monotonic() - started) * 1000)
-    rid = await _log_request(
-        pool, **base, status="ok", tier_used=res["tier_used"], provider=res["provider"], model_used=res["model_used"],
-        key_id=res["key_id"], key_source=res["key_source"], response_chars=len(res["text"]), latency_ms=latency,
-        cache_hit=res["cache_hit"], attempts=res["attempts"],
-        input_tokens=res.get("input_tokens"), output_tokens=res.get("output_tokens"),
-        estimated_cost_usd=res.get("estimated_cost_usd"),
+
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@router.post("/ask/stream")
+async def ask_stream(body: AskIn, request: Request, auth: AskAuth = Depends(ask_auth)):
+    pool, redis = request.app.state.pool, request.app.state.redis
+    project, messages, prompt = await _prepare_ask(pool, redis, auth, body)
+
+    async def event_stream():
+        async for event in ask_exec.iter_stream_events(
+            pool,
+            redis,
+            project=project,
+            user_id=auth.user_id,
+            access_token_id=auth.access_token_id,
+            tier_requested=body.tier,
+            max_output_tokens=body.max_output_tokens,
+            messages=messages,
+            prompt=prompt,
+            json_schema=body.json_schema,
+        ):
+            yield _sse(event)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-    await usage_agg.record(
-        pool,
-        project_id=project["id"],
-        ok=True,
-        cache_hit=bool(res["cache_hit"]),
-        input_tokens=int(res.get("input_tokens") or 0),
-        output_tokens=int(res.get("output_tokens") or 0),
-        estimated_cost_usd=float(res.get("estimated_cost_usd") or 0),
-    )
-    if auth.access_token_id:
-        await pool.execute(
-            "UPDATE project_access_tokens SET last_used_at = $2 WHERE id = $1",
-            auth.access_token_id, datetime.now(timezone.utc),
-        )
-    out = {
-        "request_id": rid, "text": res["text"], "provider": res["provider"], "model_used": res["model_used"],
-        "tier_used": res["tier_used"], "cache_hit": res["cache_hit"], "latency_ms": latency,
-        "input_tokens": res.get("input_tokens") or 0,
-        "output_tokens": res.get("output_tokens") or 0,
-        "estimated_cost_usd": res.get("estimated_cost_usd") or 0.0,
-    }
-    if res.get("tier_escalated_from"):
-        out["tier_escalated_from"] = res["tier_escalated_from"]
-    if res.get("models_chain"):
-        out["models_chain"] = res["models_chain"]
-    return out
 
 
 @router.get("/requests")

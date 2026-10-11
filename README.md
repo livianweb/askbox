@@ -7,6 +7,8 @@ Licencia [MIT](LICENSE).
 - **Fase 0**: andamiaje (API FastAPI, web Next.js, PostgreSQL, Redis, worker arq).
 - **Fase 1 (MVP)**: auth, proyectos, claves cifradas, `/v1/ask`, UI mínima.
 - **Fase 2**: tokens de proyecto (`ab_live_…`), plantillas de prompt versionadas, rate limit por token/proyecto, UI en `/projects`.
+- **Fase 3**: routing `tier=auto`, uso diario, keypool `exhausted`.
+- **Fase 4**: batch (`POST /v1/batch`, `GET /v1/jobs/{id}`), stream SSE (`POST /v1/ask/stream`), alertas de claves, worker arq real.
 
 ## Arranque
 
@@ -63,6 +65,11 @@ En Docker, el contenedor `api` no lee `.env` del repo (está enmascarado). Para 
 | GET | `/v1/projects/{id}/prompts/{name}/versions` | Historial de versiones |
 | DELETE | `/v1/projects/{id}/prompts/{name}` | Borrar todas las versiones |
 | POST | `/v1/ask` | Sesión o `Authorization: Bearer ab_live_…` (scope `ask:read`). Cuerpo: `prompt` **o** `prompt_template` + `variables`, `system?`, `project_id?` (ignorado con token de proyecto), `tier`, `max_output_tokens` |
+| POST | `/v1/ask/stream` | Igual auth/cuerpo que `/v1/ask`; respuesta **SSE** (`text/event-stream`): eventos `delta` con `text` y `done` con metadatos (`request_id`, tokens, etc.) |
+| POST | `/v1/batch` | Solo sesión. `{project_id?, tier, max_output_tokens, items:[{prompt, system?}]}` → `{job_id, status, total}`; encola worker arq |
+| GET | `/v1/jobs/{job_id}` | Estado del batch e ítems (`text` / `error_code` por prompt) |
+| GET | `/v1/alerts` | Claves de proyecto en `invalid` o `exhausted` (sesión) |
+| GET | `/v1/projects/{id}/usage` | Agregado diario (`?days=30`; token con scope `usage:read`) |
 | GET | `/v1/requests` | Trazas recientes (sin prompts) |
 | GET | `/v1/settings/git/status` | Estado del repo del proyecto: branch, remotos (URL sin credenciales), último commit, preferencias |
 | PATCH | `/v1/settings/git/preferences` | `{auto_commit?, remote_name?, default_visibility?}` — guardadas en `.askbox/git-settings.json` (no secreto, versionable) |
@@ -95,6 +102,14 @@ PID=$(curl -b cj -s $J -d '{"name":"demo"}' $A/v1/projects | python3 -c 'import 
 curl -b cj -s $J -d '{"provider":"gemini","key":"<TU_CLAVE>"}' $A/v1/projects/$PID/keys
 curl -b cj -s $J -d "{\"project_id\":\"$PID\",\"prompt\":\"Di hola\",\"tier\":\"fast\"}" $A/v1/ask
 curl -b cj -s $A/v1/requests
+
+# Fase 4: stream SSE y batch
+curl -b cj -N -s $J -d "{\"project_id\":\"$PID\",\"prompt\":\"Cuenta hasta 3\",\"tier\":\"fast\"}" $A/v1/ask/stream
+JOB=$(curl -b cj -s $J -d "{\"project_id\":\"$PID\",\"tier\":\"fast\",\"items\":[{\"prompt\":\"uno\"},{\"prompt\":\"dos\"}]}" $A/v1/batch | python3 -c 'import sys,json;print(json.load(sys.stdin)["job_id"])')
+sleep 2
+curl -b cj -s $A/v1/jobs/$JOB
+curl -b cj -s $A/v1/alerts
+curl -b cj -s $A/v1/projects/$PID/usage?days=7
 
 # Fase 2: token de proyecto y plantilla
 TOK=$(curl -b cj -s $J -d '{"label":"script","scopes":["ask:read"]}' $A/v1/projects/$PID/access-tokens | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
@@ -138,6 +153,7 @@ Variables que lee la API (`api/app/config.py` → `api/app/mailer.py`): `ASKBOX_
 - Tokens de proyecto: prefijo `ab_live_`, SHA-256 en `project_access_tokens`; scopes `ask:read`, `prompts:write`, `keys:write`, `usage:read` (gestión UI con sesión; `/v1/ask` con Bearer de token).
 - Tras HTTPS, poner `ASKBOX_COOKIE_SECURE=true` en `.env` (o guardar `public_url` https en `/settings/deploy`; la API usa cookies `Secure` según la URL efectiva aunque el contenedor no se haya reiniciado).
 - **Fase 3 (routing):** `tier=auto` infiere `fast|balanced|strong` (longitud, código, `max_output_tokens`, `json_schema`, `default_tier` del proyecto) y **escala una sola vez** al siguiente nivel si la cascada falla. Caché Redis con clave que incluye `json_schema`. Keypool con cooldown `min(900, max(60, 2^n·60))` y `exhausted`. `usage_daily` + `GET /v1/projects/{id}/usage`. Respuesta de `/v1/ask` incluye `cache_hit`, tokens y `models_chain` opcional.
+- **Fase 4 (batch/stream):** `batch_jobs` + `batch_job_items` en PostgreSQL; worker `arq` (`process_batch_job`). Stream reutiliza `app/llm/router.ask` y emite trozos SSE antes del evento `done`. `GET /v1/alerts` y badge en nav `/usage` (gráficas + CSV). Límite `ASKBOX_BATCH_MAX_ITEMS` (32 por defecto).
 
 ## Configuración Git del proyecto (`/settings/git`)
 

@@ -72,6 +72,7 @@ class Settings:
     max_system_chars: int = _int("ASKBOX_MAX_SYSTEM_CHARS", 4000)
     max_output_tokens_cap: int = _int("ASKBOX_MAX_OUTPUT_TOKENS_CAP", 8192)
     ask_rate_per_min: int = _int("ASKBOX_ASK_RATE_PER_MIN", 30)
+    batch_max_items: int = _int("ASKBOX_BATCH_MAX_ITEMS", 32)
     login_rate_per_min: int = _int("ASKBOX_LOGIN_RATE_PER_MIN", 10)
 
     # LLM

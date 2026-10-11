@@ -5,12 +5,23 @@ import { api } from "../lib/api";
 
 export default function Nav() {
   const [me, setMe] = useState(null);
+  const [alertCount, setAlertCount] = useState(0);
   const path = usePathname();
   const router = useRouter();
 
   useEffect(() => {
     api("/v1/auth/me").then(setMe).catch(() => setMe(null));
   }, [path]);
+
+  useEffect(() => {
+    if (!me) {
+      setAlertCount(0);
+      return;
+    }
+    api("/v1/alerts")
+      .then((r) => setAlertCount((r.alerts || []).length))
+      .catch(() => setAlertCount(0));
+  }, [me, path]);
 
   async function logout() {
     await api("/v1/auth/logout", { method: "POST" }).catch(() => {});
@@ -25,7 +36,7 @@ export default function Nav() {
         <>
           <a href="/projects">Proyectos y claves</a>
           <a href="/playground">Playground</a>
-          <a href="/usage">Uso</a>
+          <a href="/usage">Uso{alertCount > 0 ? ` (${alertCount})` : ""}</a>
           <a href="/settings/deploy">Despliegue</a>
           <a href="/settings/git">Config. Git</a>
         </>

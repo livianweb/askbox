@@ -2,6 +2,8 @@ import logging
 from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
+from arq import create_pool as arq_create_pool
+from arq.connections import RedisSettings
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
@@ -11,7 +13,7 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.crypto import master_key_ready
 from app.db import create_pool, run_migrations
-from app.routers import access_tokens, ask, auth, deploy_settings, git_settings, projects, prompts, usage
+from app.routers import access_tokens, alerts, ask, auth, batch, deploy_settings, git_settings, projects, prompts, usage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("askbox")
@@ -22,9 +24,11 @@ async def lifespan(app: FastAPI):
     app.state.pool = await create_pool()
     await run_migrations(app.state.pool)
     app.state.redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+    app.state.arq = await arq_create_pool(RedisSettings.from_dsn(settings.redis_url))
     if not master_key_ready():
         log.warning("ASKBOX_MASTER_KEY ausente o inválida: el alta de claves devolverá 503")
     yield
+    await app.state.arq.close()
     await app.state.redis.aclose()
     await app.state.pool.close()
 
@@ -41,6 +45,8 @@ app.include_router(access_tokens.router)
 app.include_router(prompts.router)
 app.include_router(ask.router)
 app.include_router(usage.router)
+app.include_router(batch.router)
+app.include_router(alerts.router)
 app.include_router(git_settings.router)
 app.include_router(deploy_settings.router)
 

@@ -71,6 +71,9 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      ASKBOX_MASTER_KEY: ${ASKBOX_MASTER_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     depends_on:
       - redis
       - db

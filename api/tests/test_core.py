@@ -10,6 +10,7 @@ from app.llm.errors import classify  # noqa: E402
 from app.llm.keypool import KeyHandle  # noqa: E402
 from app.llm import cache  # noqa: E402
 from app.llm.router import infer_tier_from_text, next_tier  # noqa: E402
+from app.ask_exec import _response_from_res  # noqa: E402
 from app.llm.schema_check import response_matches_schema  # noqa: E402
 from app.security import hash_password, verify_password  # noqa: E402
 
@@ -75,6 +76,22 @@ class MiscTests(unittest.TestCase):
 
     def test_handle_repr_hides_secret(self):
         self.assertNotIn("topsecret", repr(KeyHandle("gemini", "topsecret", None, "system")))
+
+    def test_stream_response_shape(self):
+        res = {
+            "text": "hola",
+            "provider": "gemini",
+            "model_used": "m",
+            "tier_used": "fast",
+            "cache_hit": False,
+            "input_tokens": 1,
+            "output_tokens": 2,
+            "estimated_cost_usd": 0.001,
+        }
+        out = _response_from_res(res, "rid-1", 42)
+        self.assertEqual(out["request_id"], "rid-1")
+        self.assertEqual(out["latency_ms"], 42)
+        self.assertEqual(out["text"], "hola")
 
 
 if __name__ == "__main__":
