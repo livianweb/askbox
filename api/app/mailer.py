@@ -37,7 +37,15 @@ def _send_sync(to: str, subject: str, body: str) -> None:
             s.starttls(context=ctx)
         if settings.smtp_user:
             s.login(settings.smtp_user, settings.smtp_password)
-        s.send_message(msg)
+        refused = s.send_message(msg)
+        if refused:
+            raise smtplib.SMTPRecipientsRefused(refused)
+        log.info(
+            "email SMTP aceptado (250/queued) to=%s subject=%s from=%s",
+            to,
+            subject,
+            settings.smtp_from,
+        )
 
 
 async def send_mail(to: str, subject: str, body: str) -> bool:
