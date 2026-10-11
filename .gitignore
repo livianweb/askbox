@@ -25,3 +25,16 @@ build/
 
 # .askbox/git-settings.json NO se ignora a propósito: es config no secreta (ver gitops.py)
 # y debe viajar versionada con el repo.
+
+# Entornos/artefactos locales adicionales
+.env.local
+.venv*/
+venv/
+.next/
+out/
+cj
+*.cookies
+*.pid
+.idea/
+.vscode/
+Thumbs.db

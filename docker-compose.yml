@@ -22,6 +22,23 @@ services:
       ASKBOX_SMTP_PASSWORD: ${ASKBOX_SMTP_PASSWORD:-}
       ASKBOX_SMTP_FROM: ${ASKBOX_SMTP_FROM:-}
       ASKBOX_SMTP_TLS: ${ASKBOX_SMTP_TLS:-starttls}
+      # Pantalla /settings/git (app/gitops.py): repo montado en /repo (ver volumes).
+      ASKBOX_REPO_PATH: /repo
+      GIT_OPTIONAL_LOCKS: "0"          # git status no reescribe .git/index
+      GIT_CONFIG_COUNT: "1"            # el repo es del uid del host, no del usuario del contenedor
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /repo
+    # Mismo uid/gid que el dueño del repo en el host: los ficheros que escriba git
+    # (.git/config) y .askbox/ no quedan como root. Ajusta en .env si tu uid no es 1000.
+    user: "${ASKBOX_UID:-1000}:${ASKBOX_GID:-1000}"
+    volumes:
+      # Árbol del proyecto en solo lectura (git status necesita el worktree)...
+      - ./:/repo:ro
+      # ...salvo lo que gitops debe escribir (remotos/config y preferencias no secretas).
+      - ./.git:/repo/.git:rw
+      - ./.askbox:/repo/.askbox:rw
+      # ...y el .env real NUNCA es legible dentro del contenedor (secretos van por environment).
+      - /dev/null:/repo/.env:ro
     depends_on:
       db:
         condition: service_healthy

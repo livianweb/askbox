@@ -37,6 +37,8 @@ curl -s http://localhost:8066/ready    # db, redis y master_key
 | PATCH | `/v1/settings/git/preferences` | `{auto_commit?, remote_name?, default_visibility?}` — guardadas en `.askbox/git-settings.json` (no secreto, versionable) |
 | POST | `/v1/settings/git/remote` | Conectar remoto existente (`{name, url}`) o crear uno con `gh` (`{name, create:true, slug?, visibility, push?}`) |
 
+**Pantalla `/settings/git` en Docker:** `docker-compose.yml` monta el repo en el contenedor `api` como `/repo` (`ASKBOX_REPO_PATH=/repo`): árbol en solo lectura, `.git` y `.askbox/` en lectura/escritura, y `.env` enmascarado con `/dev/null` (los secretos no son legibles desde el contenedor). La API corre con `ASKBOX_UID`/`ASKBOX_GID` (por defecto 1000:1000, el dueño del repo) para no dejar ficheros root en `.git`. El `worker` no usa gitops y no monta nada. Sin `gh auth login` en el host/contenedor no se puede crear remoto con `gh`; conectar uno existente (`POST /v1/settings/git/remote`) sí funciona.
+
 Errores: `{"error": {"code", "message"}}`. `401` sin auth, `403` registro cerrado, `413/422` tamaños, `429` rate limit, `502` fallo de proveedores (`no_provider_key` o `provider_failed`; siempre con `request_id`).
 
 ## Cómo probar
