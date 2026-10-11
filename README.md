@@ -65,6 +65,18 @@ Sin clave de proveedor, `/v1/ask` responde `502 no_provider_key` y deja la traza
 
 Tests sin red: `docker run --rm -v "$PWD/api":/srv -w /srv -e PYTHONPATH=/srv askbox-api python -m unittest discover -s tests`
 
+## Email con Brevo (recuperación de contraseña)
+
+Checklist (5 min):
+
+1. Crear cuenta en [Brevo](https://www.brevo.com/) y verificar un **remitente** (Senders & IP → añadir email o dominio).
+2. En el panel: **SMTP & API** → generar o copiar la **clave SMTP** (`xsmtpsib-…`; no uses la contraseña de login).
+3. En `.env` del servidor (copiado de `.env.example`), rellena `ASKBOX_SMTP_USER` (email con el que entras en Brevo), `ASKBOX_SMTP_PASSWORD` (clave SMTP), `ASKBOX_SMTP_FROM` (remitente verificado) y `ASKBOX_PUBLIC_URL` (URL pública de la web, para los enlaces).
+4. Opcional: `ASKBOX_LOG_RESET_LINK=false` cuando el SMTP funcione (deja de volcar enlaces en logs).
+5. Aplicar: `docker compose up -d api` y prueba en `/forgot` con un email de usuario registrado.
+
+Variables que lee la API (`api/app/config.py` → `api/app/mailer.py`): `ASKBOX_SMTP_HOST`, `ASKBOX_SMTP_PORT`, `ASKBOX_SMTP_USER`, `ASKBOX_SMTP_PASSWORD`, `ASKBOX_SMTP_FROM`, `ASKBOX_SMTP_TLS` (Brevo: `587` + `starttls`).
+
 ## Recuperar contraseña / cuenta bloqueada
 
 - Web: `/forgot` → email → enlace `/reset?token=…` (caduca en 30 min, un solo uso). Con SMTP (`ASKBOX_SMTP_*`) se envía por email; **sin SMTP** el enlace se escribe en los logs de la API: `docker compose logs api | grep RESET_LINK`.

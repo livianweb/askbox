@@ -13,7 +13,12 @@ log = logging.getLogger(__name__)
 
 
 def smtp_configured() -> bool:
-    return bool(settings.smtp_host and settings.smtp_from)
+    """Host + From obligatorios; Brevo y la mayoría de relays exigen login (USER + PASSWORD)."""
+    if not (settings.smtp_host and settings.smtp_from):
+        return False
+    if settings.smtp_password and not settings.smtp_user:
+        return False
+    return True
 
 
 def _send_sync(to: str, subject: str, body: str) -> None:
