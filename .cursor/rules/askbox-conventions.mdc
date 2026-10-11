@@ -1,0 +1,51 @@
+---
+description: Convenciones de desarrollo del proyecto askbox (rutas, puertos, LLM, Docker).
+alwaysApply: true
+---
+
+# Convenciones askbox
+
+## Alcance
+
+- Todo el código del producto vive en `/srv/softportweb/askbox`.
+- No editar otros stacks del servidor salvo integración explícita acordada con el usuario.
+
+## Puertos y red
+
+- API FastAPI en el host: **8066** (contenedor interno según `docker-compose.yml`).
+- Web Next.js en el host: **8067**.
+- No reutilizar puertos ya ocupados en el servidor (p. ej. 8063–8065 agentshop, 8070–8071 gg). Antes de cambiar puertos, comprobar listeners (`ss`, `docker ps`).
+
+## Llamadas a proveedores LLM
+
+- **Toda** petición a Gemini, OpenRouter u otro proveedor pasa por `api/app/llm/` (router, providers, keypool, cache).
+- Prohibido usar `httpx` (u otro cliente HTTP) directamente desde routers/endpoints de FastAPI para llamar a modelos.
+- Los endpoints (`POST /v1/ask`, etc.) orquestan dominio y delegan en el módulo LLM.
+
+## Catálogo de modelos
+
+- Slugs y cadenas de fallback viven en la tabla **`model_catalog`** (PostgreSQL), no en listas hardcodeadas en producción.
+- Seeds/migraciones pueden insertar filas iniciales; el runtime lee desde BD.
+- Tests y fixtures pueden usar slugs ficticios acotados a `tests/`.
+
+## Docker Compose
+
+- `docker compose` solo desde `/srv/softportweb/askbox` (build, up, down, logs).
+- **No** ejecutar `docker compose down` ni operaciones destructivas sobre stacks de otros directorios (`agentshop-x`, `snake-os`, etc.).
+
+## Orquestación (agentes)
+
+- El padre en **Auto** sigue `.cursor/rules/auto-orchestrator.mdc` y el skill `plan-implement-verify` (decide plan vs. directo, plan vía Task sin OK del usuario; **niveles de capacidad** `fast` / `balanced` / `strong` / `strong-thinking`, con slug resuelto al catálogo de la sesión — no listas normativas de slugs en reglas).
+- El catálogo **`model_catalog`** en BD es solo para el producto (`POST /v1/ask`); no confundir con la orquestación de subagentes en Cursor.
+- **Fuera de alcance del producto askbox:** cualquier integración con `snake-os` o `agentshop-x` (más allá de citarlos como referencia de patrones a portar, ver `llm-routing`). El padre no debe proponer ni priorizar esa integración por defecto al clasificar plan vs. directo.
+- **Git autopilot:** instalado en `.cursor/skills/git-autopilot/SKILL.md` — el padre commitea y pushea sin pedir OK siguiendo esa política (fin de fase, feature usable, fix importante; nunca secretos). La pantalla de configuración Git vive en la web (`/settings/git`) + API (`GET/PATCH/POST /v1/settings/git/...`, módulo `api/app/gitops.py`). Ruta del repo configurable con `ASKBOX_REPO_PATH` (por defecto, raíz del repo si se ejecuta fuera de Docker); si el proceso no tiene acceso a `.git`, el endpoint lo informa explícitamente en vez de simular datos.
+
+## Comunicación
+
+- Con el usuario: **español**, claro y conciso.
+- Código: comentarios en español o inglés técnico breve; coherente con el archivo vecino.
+
+## Stack de referencia
+
+- API: Python 3.11 + FastAPI; worker **arq**; **PostgreSQL 16**; **Redis 7**.
+- Contrato principal: `POST /v1/ask` con `tier`: `auto` | `fast` | `balanced` | `strong`.

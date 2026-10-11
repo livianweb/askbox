@@ -1,0 +1,81 @@
+services:
+  api:
+    build: ./api
+    ports:
+      - "8066:8000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      ASKBOX_MASTER_KEY: ${ASKBOX_MASTER_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ASKBOX_COOKIE_SECURE: ${ASKBOX_COOKIE_SECURE:-false}
+      ASKBOX_ALLOW_REGISTER: ${ASKBOX_ALLOW_REGISTER:-false}
+      ASKBOX_ASK_RATE_PER_MIN: ${ASKBOX_ASK_RATE_PER_MIN:-30}
+      ASKBOX_PUBLIC_URL: ${ASKBOX_PUBLIC_URL:-http://localhost:8067}
+      ASKBOX_RESET_TTL_MINUTES: ${ASKBOX_RESET_TTL_MINUTES:-30}
+      ASKBOX_DEV_SHOW_RESET_TOKEN: ${ASKBOX_DEV_SHOW_RESET_TOKEN:-false}
+      ASKBOX_LOG_RESET_LINK: ${ASKBOX_LOG_RESET_LINK:-true}
+      ASKBOX_SMTP_HOST: ${ASKBOX_SMTP_HOST:-}
+      ASKBOX_SMTP_PORT: ${ASKBOX_SMTP_PORT:-587}
+      ASKBOX_SMTP_USER: ${ASKBOX_SMTP_USER:-}
+      ASKBOX_SMTP_PASSWORD: ${ASKBOX_SMTP_PASSWORD:-}
+      ASKBOX_SMTP_FROM: ${ASKBOX_SMTP_FROM:-}
+      ASKBOX_SMTP_TLS: ${ASKBOX_SMTP_TLS:-starttls}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  worker:
+    build: ./api
+    command: ["arq", "app.worker.WorkerSettings"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      - redis
+      - db
+    restart: unless-stopped
+
+  web:
+    build: ./web
+    ports:
+      - "8067:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-askbox}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD en .env}
+      POSTGRES_DB: ${POSTGRES_DB:-askbox}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   command: tunnel --no-autoupdate run
+  #   environment:
+  #     TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+  #   restart: unless-stopped
+
+volumes:
+  db_data:
+  redis_data:

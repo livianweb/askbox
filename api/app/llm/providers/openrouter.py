@@ -1,0 +1,58 @@
+"""Cliente OpenRouter (una llamada = un modelo)."""
+from __future__ import annotations
+
+import httpx
+
+from app.config import settings
+from app.llm.errors import LLMError, classify
+
+OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions"
+
+
+def _ascii(value: str, fallback: str) -> str:
+    return value.encode("ascii", "ignore").decode("ascii") or fallback
+
+
+def _error_message(resp: httpx.Response) -> str:
+    try:
+        data = resp.json()
+    except Exception:
+        return f"HTTP {resp.status_code}"
+    err = data.get("error") if isinstance(data, dict) else None
+    if isinstance(err, dict):
+        return str(err.get("message") or "error")[:300]
+    if isinstance(err, str):
+        return err[:300]
+    return f"HTTP {resp.status_code}"
+
+
+async def complete(messages: list[dict], *, api_key: str, model: str, max_tokens: int, temperature: float = 0.4) -> dict:
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": _ascii(settings.openrouter_referer, "https://askbox.local"),
+        "X-Title": _ascii(settings.openrouter_title, "askbox"),
+        "Content-Type": "application/json",
+    }
+    payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+    try:
+        async with httpx.AsyncClient(timeout=settings.provider_timeout) as client:
+            resp = await client.post(OPENROUTER_API, headers=headers, json=payload)
+    except httpx.HTTPError as exc:
+        raise LLMError(f"{model}: no se pudo contactar OpenRouter ({type(exc).__name__})", kind="retry") from None
+    if resp.status_code >= 400:
+        msg = _error_message(resp)
+        raise LLMError(f"{model}: {msg}", status=resp.status_code, kind=classify(resp.status_code, msg))
+    try:
+        data = resp.json()
+    except Exception:
+        raise LLMError(f"{model}: respuesta de OpenRouter no válida", kind="retry") from None
+    if isinstance(data, dict) and data.get("error"):
+        msg = _error_message(resp)
+        raise LLMError(f"{model}: {msg}", kind=classify(None, msg) if classify(None, msg) != "fatal" else "retry")
+    try:
+        text = (data["choices"][0]["message"]["content"] or "").strip()
+    except (KeyError, IndexError, TypeError):
+        raise LLMError(f"{model}: respuesta no válida", kind="retry") from None
+    if not text:
+        raise LLMError(f"{model}: respuesta vacía", kind="retry")
+    return {"text": text, "model": model}

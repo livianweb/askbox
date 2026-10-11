@@ -1,0 +1,27 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+.next/
+
+# Caché y artefactos (no son código fuente)
+*.log
+.DS_Store
+*.swp
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage/
+*.cover
+dist/
+build/
+*.egg-info/
+
+# Backups que puede dejar install.sh del kit de orquestación al sobrescribir con --force
+*.bak-*
+
+# .askbox/git-settings.json NO se ignora a propósito: es config no secreta (ver gitops.py)
+# y debe viajar versionada con el repo.

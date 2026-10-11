@@ -1,0 +1,38 @@
+---
+description: Orquestación anti-conflicto entre agentes paralelos (ownership de rutas, allowlist, serie vs paralelo).
+alwaysApply: true
+---
+
+# Ownership y multitask (sin pisar escrituras)
+
+Multitask **no fusiona** cambios en disco: dos agentes que editan el mismo archivo pueden dejar el repo inconsistente. El orquestador (agente padre) debe evitar solapes de escritura.
+
+## Reglas
+
+1. **Solo paralelizar** workstreams con rutas y ownership **disjuntos**.
+2. **Cada subagente** recibe en el prompt una **allowlist** explícita de paths donde puede escribir y una **denylist** de paths prohibidos (lectura fuera de la allowlist está bien si hace falta contexto).
+3. **Mismo archivo o mismo módulo** → **serie** o **un solo agente**, nunca en paralelo. Ejemplos de conflicto: ambos tocan `api/app/main.py`, ambos `docker-compose.yml`, o el mismo paquete Python/árbol Next bajo un único objetivo de cambio.
+4. **El padre orquesta**: no lanzar la misma investigación ni la misma implementación en varios agentes; investigar una vez y pasar **resumen** a los Tasks.
+5. **Tras agentes paralelos**, el padre **verifica** que no haya solapes de paths editados ni tareas duplicadas antes de seguir (integrar, commitear o delegar verify).
+6. **Preferir un agente coherente** frente a muchos hermanos cuando el trabajo comparte contexto, contrato o archivos vecinos.
+
+## Particiones seguras en askbox (orientativas)
+
+| Zona | Notas |
+|------|--------|
+| `.cursor/**` | Reglas, skills, hooks |
+| `api/**` | Backend FastAPI |
+| `web/**` | Frontend Next.js |
+| Docs en raíz (`README.md`, etc.) | Un agente si hay edición |
+| `tests/**` | Coordinar con `api/` o `web/` si los tests cubren el mismo cambio |
+| `docker-compose.yml` | **Ownership único** — un solo agente |
+| `.env*` | **Ownership único** — un solo agente; sin secretos en prompts |
+
+Si una tarea cruza fronteras (p. ej. API + web + compose), **no** partir en paralelo por carpeta: un agente o fases en serie (primero API, luego web, etc.).
+
+## Checklist rápido del padre
+
+- ¿Las allowlists de los Tasks en paralelo son disjuntas?
+- ¿Algún archivo “caliente” (`docker-compose.yml`, `.env*`, entrypoints) queda en un solo Task?
+- ¿Evité duplicar explore/implement entre hermanos?
+- ¿Revisé solapes antes del siguiente paso?

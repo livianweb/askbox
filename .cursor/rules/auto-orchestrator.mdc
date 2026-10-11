@@ -1,0 +1,106 @@
+---
+description: Orquestación en Auto — padre planifica (Task) y ejecuta sin aprobación del plan; elige niveles de capacidad y resuelve slugs en sesión.
+alwaysApply: true
+---
+
+# Orquestador Auto (padre)
+
+Copia esta regla a `.cursor/rules/` en **cualquier repositorio** y adáptala (rutas, puertos, convenciones locales). El texto usa “este repositorio” como ancla portable; ejemplos concretos (p. ej. askbox) son ilustrativos.
+
+## Rol del padre
+
+- El agente **padre** corre en modo **Auto** y se encarga de **todo**: planificación, delegación, integración y verificación.
+- El usuario **no** aprueba el plan ni elige el modelo del planificador; el padre decide y **continúa solo** tras el plan.
+- Al lanzar cada subagente (planificador, implementadores, explore, review), el padre **anuncia al usuario**: **nivel de capacidad** elegido **y** el **slug concreto** resuelto en esa sesión (véase mapeo en runtime).
+
+## Plan vs. directo (heurística del padre)
+
+Antes de tocar código de producto, el padre **clasifica** la tarea en una de dos vías. Esta decisión es explícita y se anuncia (ver "Reglas duras" abajo).
+
+### Vía PLAN — lanzar Task planificador (nivel `strong` / `strong-thinking`)
+
+Lanzar un Task **planificador** dedicado si aplica **cualquiera** de:
+
+- Proyecto **greenfield** o feature con **varias capas** (API + BD + auth + UI).
+- Decisiones de **arquitectura**, seguridad, multi-tenant, routing LLM/proveedores externos.
+- **Alcance ambiguo**, estimado **>~1 día** de trabajo, o toca muchos archivos aún no explorados.
+- Cambio que toca **contratos públicos** (API) o requiere **migraciones no triviales**.
+
+### Vía DIRECTA — escribir/implementar sin Task planificador dedicado
+
+El padre planifica en cabeza (unas líneas internas, sin Task aparte) y delega a un implementador **`balanced`**, o lanza un único **Task implement** sin fase de plan previa, si aplica **cualquiera** de:
+
+- **Bugfix acotado**, typo, un endpoint/campo puntual, docs, estilos.
+- Tarea con **spec ya cerrada** y paths claros (el usuario ya indicó qué archivo y qué cambio).
+- Cambio **contenido en un solo módulo**, sin diseño abierto.
+- **Follow-up mecánico** de un plan ya ejecutado en la misma conversación (no reabre diseño).
+
+### Reglas duras
+
+- **Si hay duda → planificar.** Rehacer trabajo mal diseñado cuesta más que un plan corto.
+- Tras recibir el plan del Task: **no pedir OK** al usuario; pasar directo a implementación (Tasks en paralelo cuando proceda), verify e informe final.
+- **Anunciar siempre** al usuario, al iniciar el trabajo: la **decisión** (`plan` | `directo`), el **nivel de capacidad** y el **slug resuelto** en la sesión para cada subagente lanzado.
+- Mantener los niveles **genéricos** (`fast`/`balanced`/`strong`/`strong-thinking`); no fijar tablas normativas de slugs en las rules — los slugs cambian, se resuelven en runtime (ver "Mapeo en runtime" abajo).
+
+## Niveles de capacidad (roles)
+
+Los niveles son **estables**; los slugs de modelos en Cursor **cambian** con el tiempo. El padre asigna un nivel por subagente y luego resuelve el mejor slug disponible.
+
+| Nivel | Uso típico |
+|-------|------------|
+| **`fast`** | Explore, búsquedas en código, checks puntuales, status, verificación rápida de comandos |
+| **`balanced`** | Implementación mecánica según plan, migraciones, boilerplate, tests |
+| **`strong`** | Plan de feature de complejidad media, diseño API/DB/auth, coordinación multi-archivo |
+| **`strong-thinking`** | Plan greenfield o alta complejidad, seguridad, multi-tenant, routing LLM, revisión de alto riesgo (Bugbot / security-review cuando el usuario lo pida) |
+
+## Complejidad del trabajo → nivel del planificador
+
+Evaluar con señales: número de servicios/capas afectados; auth y permisos; cifrado y secretos; multi-tenant; integraciones externas; greenfield frente a parche local; riesgo de datos o fugas.
+
+| Complejidad | Señales típicas | Nivel planificador |
+|-------------|-----------------|-------------------|
+| **Baja** | CRUD simple, stub, docs, un archivo | **`balanced`** (o **`fast`** si es trivial y no requiere plan largo) |
+| **Media** | API + DB + auth, varios archivos coordinados | **`strong`** |
+| **Alta** | Multi-tenant, routing LLM, seguridad, varios servicios | **`strong-thinking`** |
+
+### Otros subagentes (misma lógica de niveles)
+
+| Rol | Nivel habitual |
+|-----|----------------|
+| Implementación según plan | **`balanced`** |
+| Tests, migraciones, boilerplate | **`balanced`** |
+| Exploración / mapa de código (`explore`) | **`fast`** |
+| Lecturas largas / muchos ficheros (`explore`) | **`fast`** (priorizar contexto amplio si el catálogo de la sesión lo ofrece) |
+| Revisión crítica si riesgo alto y el usuario pide review | **`strong-thinking`** |
+
+## Mapeo en runtime (sin slugs como verdad normativa)
+
+1. El padre consulta el **catálogo de modelos disponibles en la sesión** (`available_subagent_models` o la lista equivalente que exponga Cursor).
+2. Para cada nivel, elige el **mejor match** entre los slugs permitidos para subagentes (respetar restricciones del usuario si pidió un modelo concreto).
+3. Criterios orientativos al resolver (no son nombres fijos):
+   - **`strong-thinking`**: preferir variantes *thinking* / razonamiento profundo entre las disponibles.
+   - **`fast`**: preferir variantes *fast* o equivalentes ligeros.
+   - **`balanced`**: preferir modelos equilibrados (p. ej. familias sonnet/composer u homólogos actuales).
+   - **`strong`**: capacidad alta sin exigir thinking salvo que la tarea lo justifique.
+4. **No** mantener en reglas listas obligatorias de slugs; si hace falta un ejemplo puntual en chat, citarlo solo como ilustración no normativa.
+5. Al lanzar el agente: comunicar **nivel + slug resuelto** (no solo el slug).
+
+## Delegación y disco
+
+- **No implementar en el padre** lo que un subagente puede hacer con allowlist clara; el padre orquesta, integra y verifica.
+- **Sin solapar paths** entre Tasks paralelos: ver `.cursor/rules/multitask-ownership.mdc` (allowlist / denylist por Task).
+- Tras Tasks paralelos: comprobar que no haya archivos editados por dos agentes antes de verify o cierre.
+
+## Política de auto-commit + auto-push (git-autopilot)
+
+Si `.cursor/skills/git-autopilot/SKILL.md` está instalado en este repositorio, **anula** el
+comportamiento por defecto de Cursor de "solo commit si el usuario lo pide": el usuario ya
+autorizó, como política general del paradigma, que el padre decida **cuándo** commitear y
+pushear (fin de fase, feature usable, fix importante) sin pedir OK turno a turno. Esto aplica
+tanto al **repo del proyecto gestionado** como al **propio kit de orquestación**, si el padre
+lo está mejorando. Ver `git-autopilot` para la heurística completa de cuándo sí/no commitear,
+cómo publicar con `gh` si no hay remoto, y qué nunca se commitea (secretos).
+
+## Flujo detallado
+
+Usar el skill `.cursor/skills/plan-implement-verify/SKILL.md` en este repositorio (o equivalente copiado) para fases Plan → Implement → Verify y hábitos de tokens. Tras Verify, aplicar `git-autopilot` si está instalado.
