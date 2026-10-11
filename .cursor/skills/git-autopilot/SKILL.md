@@ -62,7 +62,7 @@ más de contexto, prefiere cerrar con un commit coherente antes que dejarlo sin 
    1. **`gh` del host**: `gh auth status` OK → `gh repo create` (visibilidad según la preferencia
       del proyecto; por defecto `private` salvo que el usuario pida `public`) y push.
    2. **UI/API de settings git del proyecto con GitHub token guardado** (si la app lo ofrece,
-      p. ej. askbox): `GET /v1/settings/git/status` → `github_token_configured: true` →
+      p. ej. askbox): `GET /v1/settings/git/status?repo=<nombre>` → `github_token_configured: true` (el token es **por repo**) →
       `POST /v1/settings/git/remote` con `{"name":"origin","create":true,"slug":"<repo>",
       "visibility":"private","push":true}` (y `?repo=<nombre>` para repos hermanos montados,
       p. ej. el propio kit). Auth: cookie de sesión o `Authorization: Bearer <token de API>`
@@ -110,7 +110,7 @@ nuevo (o si falta), el agente debe crear una pantalla/endpoint de administració
   repo** (p. ej. `.askbox/git-settings.json` o equivalente por proyecto), para que viajen con
   el código. Las credenciales (tokens, SSH keys) **nunca** se guardan ahí: viven en `gh auth`,
   en variables de entorno del host/contenedor, o **cifradas en la BD/almacén de la app**
-  (GitHub token vía API: `GET` solo `configured`+`last4`; `PUT/POST` guarda; `DELETE` borra),
+  (GitHub token **por repositorio** vía API, `?repo=<nombre>`: `GET` solo `configured`+`last4`; `PUT/POST` guarda; `DELETE` borra),
   siempre fuera del repo versionado.
 - **Degradación clara**: si el proceso que sirve esta pantalla no tiene acceso al `.git` del
   repo (p. ej. corre en un contenedor sin ese volumen montado), debe decirlo explícitamente en

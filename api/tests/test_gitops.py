@@ -161,3 +161,17 @@ class CredsFormatTests(unittest.TestCase):
         self.assertEqual(crypto.decrypt_secret(ct, nonce, ver, "user:u1", "github"), "ghp_" + "x" * 36)
         with self.assertRaises(crypto.CryptoError):
             crypto.decrypt_secret(ct, nonce, ver, "user:u2", "github")
+
+
+class CredsScopeTests(unittest.TestCase):
+    def test_aad_scope_is_per_repo_and_primary_keeps_legacy(self):
+        from app import gitcreds
+        self.assertEqual(gitcreds._aad_scope("u1", "askbox"), "user:u1")  # compat con el token global migrado
+        self.assertNotEqual(gitcreds._aad_scope("u1", "kit"), gitcreds._aad_scope("u1", "askbox"))
+        self.assertNotEqual(gitcreds._aad_scope("u1", "kit"), gitcreds._aad_scope("u1", "otro"))
+
+    def test_token_of_one_repo_does_not_decrypt_as_another(self):
+        from app import crypto, gitcreds
+        ct, nonce, ver = crypto.encrypt_secret("ghp_" + "y" * 36, gitcreds._aad_scope("u1", "kit"), "github")
+        with self.assertRaises(crypto.CryptoError):
+            crypto.decrypt_secret(ct, nonce, ver, gitcreds._aad_scope("u1", "askbox"), "github")

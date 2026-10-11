@@ -2,7 +2,7 @@
 
 Expone estado de git (remoto saneado, branch, último commit), preferencias no secretas
 guardadas en el propio repo (`.askbox/git-settings.json`) y la gestión del **GitHub token**:
-cifrado con AES-256-GCM en BD (`git_credentials`), jamás devuelto por la API (solo
+cifrado con AES-256-GCM en BD (`git_credentials`, **un token por repo**), jamás devuelto por la API (solo
 `github_token_configured` y `last4`). Con token (o `gh` autenticado) se puede crear el repo
 remoto y hacer push. Si el proceso no tiene acceso al `.git` del repo (p. ej. el contenedor no
 lo monta), lo informa explícitamente en vez de simular datos.
@@ -75,22 +75,23 @@ def _require_repo(name: str | None) -> tuple[str, str]:
     return name, path
 
 
-async def _token_meta(request: Request, user: dict) -> dict:
-    return await gitcreds.get_meta(request.app.state.pool, user["id"])
+async def _token_meta(request: Request, user: dict, repo: str) -> dict:
+    """Metadatos del token **de ese repo** (nunca el token)."""
+    return {**await gitcreds.get_meta(request.app.state.pool, user["id"], repo), "github_token_repo": repo}
 
 
 async def _status_payload(request: Request, user: dict, name: str, path: str) -> dict:
     out = await asyncio.to_thread(gitops.git_status, path)
     out["repo"] = name
     out["repos"] = _repo_names()
-    out.update(await _token_meta(request, user))
+    out.update(await _token_meta(request, user, name))
     out["gh_authenticated"] = await asyncio.to_thread(gitops.gh_authenticated)
     return out
 
 
-async def _load_token(request: Request, user: dict) -> str | None:
+async def _load_token(request: Request, user: dict, repo: str) -> str | None:
     try:
-        return await gitcreds.load_token(request.app.state.pool, user["id"])
+        return await gitcreds.load_token(request.app.state.pool, user["id"], repo)
     except CryptoError:
         raise err(503, "master_key_invalid", "No se pudo descifrar el GitHub token (ASKBOX_MASTER_KEY ausente o distinta).") from None
 
@@ -115,28 +116,38 @@ async def update_preferences(body: PreferencesIn, user: dict = Depends(current_u
 # --- GitHub token (cifrado en BD; nunca se devuelve) ------------------------------------------
 
 @router.get("/github-token")
-async def github_token_status(request: Request, user: dict = Depends(current_user)):
-    return await _token_meta(request, user)
+async def github_token_status(
+    request: Request, repo: str | None = Query(default=None), user: dict = Depends(current_user),
+):
+    name, _ = _resolve_repo(repo)
+    return await _token_meta(request, user, name)
 
 
 @router.put("/github-token")
 @router.post("/github-token")
-async def github_token_save(body: TokenIn, request: Request, user: dict = Depends(current_user)):
+async def github_token_save(
+    body: TokenIn, request: Request, repo: str | None = Query(default=None), user: dict = Depends(current_user),
+):
+    name, _ = _resolve_repo(repo)
     token = body.token.strip()
     if not gitcreds.valid_token_format(token):
         raise err(422, "invalid_token", "Formato de token no válido (20-255 caracteres ASCII sin espacios).")
     if not gitcreds.master_key_ready():
         raise err(503, "master_key_missing", "ASKBOX_MASTER_KEY no está configurada en el servidor.")
     try:
-        return await gitcreds.save_token(request.app.state.pool, user["id"], token)
+        await gitcreds.save_token(request.app.state.pool, user["id"], name, token)
     except CryptoError:
         raise err(503, "master_key_invalid", "ASKBOX_MASTER_KEY no es válida.") from None
+    return await _token_meta(request, user, name)
 
 
 @router.delete("/github-token")
-async def github_token_delete(request: Request, user: dict = Depends(current_user)):
-    await gitcreds.delete_token(request.app.state.pool, user["id"])
-    return {"github_token_configured": False}
+async def github_token_delete(
+    request: Request, repo: str | None = Query(default=None), user: dict = Depends(current_user),
+):
+    name, _ = _resolve_repo(repo)
+    await gitcreds.delete_token(request.app.state.pool, user["id"], name)
+    return {"github_token_configured": False, "github_token_repo": name}
 
 
 # --- Remoto y push ------------------------------------------------------------------------------
@@ -157,12 +168,12 @@ async def remote(
             if not ok:
                 raise err(502, "gh_repo_create_failed", f"No se pudo crear el repo remoto: {error}")
         else:
-            token = await _load_token(request, user)
+            token = await _load_token(request, user, name)
             if not token:
                 raise err(
                     501, "gh_not_available",
-                    "Sin credenciales de GitHub: guarda un GitHub token en /settings/git "
-                    "(PUT /v1/settings/git/github-token), o haz 'gh auth login' en el host, "
+                    f"Sin credenciales de GitHub: guarda el GitHub token del repo '{name}' en /settings/git "
+                    f"(PUT /v1/settings/git/github-token?repo={name}), o haz 'gh auth login' en el host, "
                     "o usa 'url' para conectar un remoto existente.",
                 )
             created = await _create_with_token(path, body, visibility, token, push_prefs=(name == PRIMARY_REPO))
@@ -210,11 +221,11 @@ async def _create_with_token(path: str, body: RemoteIn, visibility: str, token: 
 async def push(
     body: PushIn, request: Request, repo: str | None = Query(default=None), user: dict = Depends(current_user),
 ):
-    """Push de la rama actual (o `branch`) al remoto. Usa el GitHub token guardado si lo hay."""
+    """Push de la rama actual (o `branch`) al remoto. Usa el GitHub token guardado **para ese repo** si lo hay."""
     name, path = _require_repo(repo)
     prefs = gitops.load_preferences(path)
     remote_name = body.remote or prefs.get("remote_name") or "origin"
-    token = await _load_token(request, user)
+    token = await _load_token(request, user, name)
     ok, error = await asyncio.to_thread(gitops.push_branch, path, remote_name, body.branch, token)
     if not ok:
         raise err(502, "git_push_failed", f"No se pudo pushear: {error}")

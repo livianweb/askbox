@@ -36,12 +36,12 @@ curl -s http://localhost:8066/ready    # db, redis y master_key
 | GET | `/v1/settings/git/status` | Estado del repo del proyecto: branch, remotos (URL sin credenciales), último commit, preferencias |
 | PATCH | `/v1/settings/git/preferences` | `{auto_commit?, remote_name?, default_visibility?}` — guardadas en `.askbox/git-settings.json` (no secreto, versionable) |
 | POST | `/v1/settings/git/remote` | Conectar remoto existente (`{name, url}`) o crear uno (`{name, create:true, slug?, visibility?, description?, push?}`): con `gh` si está autenticado en el host; si no, con el GitHub token guardado (REST; `slug` obligatorio) |
-| GET | `/v1/settings/git/github-token` | `{github_token_configured, github_token_last4?}`; **nunca** el token |
-| PUT/POST | `/v1/settings/git/github-token` | `{token}` → se cifra (AES-256-GCM, `ASKBOX_MASTER_KEY`) en `git_credentials`; reemplaza el anterior |
-| DELETE | `/v1/settings/git/github-token` | Borra el token |
+| GET | `/v1/settings/git/github-token?repo=` | `{github_token_configured, github_token_last4?, github_token_repo}` **del repo indicado**; **nunca** el token |
+| PUT/POST | `/v1/settings/git/github-token?repo=` | `{token}` → se cifra (AES-256-GCM, `ASKBOX_MASTER_KEY`) en `git_credentials` para ese repo; reemplaza el anterior |
+| DELETE | `/v1/settings/git/github-token?repo=` | Borra el token de ese repo |
 | POST | `/v1/settings/git/push` | `{remote?, branch?}` → `git push -u` de la rama actual (usa el token si el remoto es `https://github.com/...`) |
 
-`status`, `remote` y `push` aceptan `?repo=<nombre>`: `askbox` (por defecto) o un repo montado en `ASKBOX_EXTRA_REPOS` (por defecto `cursor-agent-orchestrator`).
+`status`, `remote`, `push` y `github-token` aceptan `?repo=<nombre>`: `askbox` (por defecto) o un repo montado en `ASKBOX_EXTRA_REPOS` (por defecto `cursor-agent-orchestrator`).
 
 **Pantalla `/settings/git` en Docker:** `docker-compose.yml` monta el repo en el contenedor `api` como `/repo` (`ASKBOX_REPO_PATH=/repo`): árbol en solo lectura, `.git` y `.askbox/` en lectura/escritura, y `.env` enmascarado con `/dev/null` (los secretos no son legibles desde el contenedor). La API corre con `ASKBOX_UID`/`ASKBOX_GID` (por defecto 1000:1000, el dueño del repo) para no dejar ficheros root en `.git`. El `worker` no usa gitops y no monta nada. Sin `gh auth login` en el host/contenedor no se puede crear remoto con `gh`; conectar uno existente (`POST /v1/settings/git/remote`) sí funciona.
 
@@ -92,8 +92,10 @@ MVP de pantalla de administración para el propio repo de askbox (ver `api/app/g
   commit y si hay cambios sin commitear.
 - Permite conectar un remoto existente o crear uno nuevo (público/privado según
   `default_visibility`): con `gh` si está autenticado, o con el **GitHub token** guardado.
-- **GitHub token (PAT):** se pega en el campo password de `/settings/git`, se cifra con AES-256-GCM
-  (`ASKBOX_MASTER_KEY`, AAD ligado al usuario) en la tabla `git_credentials` y no vuelve a salir
+- **GitHub token (PAT), uno por repositorio:** se pega en el campo password de `/settings/git` (el
+  selector de repo decide a cuál pertenece; la UI muestra «Token de este repositorio»), se cifra con
+  AES-256-GCM (`ASKBOX_MASTER_KEY`, AAD ligado a usuario+repo) en la tabla `git_credentials`
+  (PK `user_id, provider, repo`; migración `004`, que asocia el token global antiguo a `askbox`) y no vuelve a salir
   de la API (solo `github_token_configured` y `last4`). Para crear repo + push necesita permiso
   de crear repos (clásico: `repo`; fine-grained: *Administration* y *Contents* en write). Al
   usarlo, solo vive en memoria: la API lo pasa a `git` por variables de entorno del subproceso

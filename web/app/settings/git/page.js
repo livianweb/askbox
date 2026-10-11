@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "../../../lib/api";
 
@@ -25,11 +25,17 @@ export default function GitSettings() {
   // GitHub token (solo se escribe; el servidor nunca lo devuelve)
   const [repo, setRepo] = useState("");
   const [tokenInput, setTokenInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const reqId = useRef(0);
 
   const load = useCallback(() => {
+    const id = ++reqId.current;
+    setLoading(true);
     api(`/v1/settings/git/status${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`)
       .then((s) => {
+        if (id !== reqId.current) return; // respuesta de un repo anterior: descartar
         setStatus(s);
+        setLoading(false);
         if (s.preferences) {
           setAutoCommit(!!s.preferences.auto_commit);
           setRemoteName(s.preferences.remote_name || "origin");
@@ -37,20 +43,36 @@ export default function GitSettings() {
           setCreateVisibility(s.preferences.default_visibility || "private");
         }
       })
-      .catch((e) => (e.status === 401 ? router.replace("/login") : setError(e.message)));
+      .catch((e) => {
+        if (id !== reqId.current) return;
+        setLoading(false);
+        if (e.status === 401) router.replace("/login");
+        else setError(e.message);
+      });
   }, [router, repo]);
 
   useEffect(() => { load(); }, [load]);
 
   const q = repo ? `?repo=${encodeURIComponent(repo)}` : "";
+  // Repo efectivo del selector (el token es por repositorio)
+  const currentRepo = repo || status?.repo || "askbox";
+  const tokenQ = `?repo=${encodeURIComponent(currentRepo)}`;
+
+  function changeRepo(next) {
+    setRepo(next);
+    setTokenInput(""); // no arrastrar un PAT a otro repo
+    setError(""); setMsg("");
+    // el estado del token del repo anterior no debe mostrarse mientras carga el nuevo
+    setStatus((s) => (s ? { ...s, github_token_configured: undefined, github_token_last4: undefined } : s));
+  }
 
   async function saveToken(e) {
     e.preventDefault();
     setError(""); setMsg("");
     try {
-      await api("/v1/settings/git/github-token", { method: "PUT", body: { token: tokenInput } });
+      await api(`/v1/settings/git/github-token${tokenQ}`, { method: "PUT", body: { token: tokenInput } });
       setTokenInput(""); // no conservar el PAT en el estado del navegador
-      setMsg("GitHub token guardado (cifrado en el servidor).");
+      setMsg(`GitHub token de "${currentRepo}" guardado (cifrado en el servidor).`);
       load();
     } catch (err) {
       setError(err.message);
@@ -60,8 +82,8 @@ export default function GitSettings() {
   async function deleteToken() {
     setError(""); setMsg("");
     try {
-      await api("/v1/settings/git/github-token", { method: "DELETE" });
-      setMsg("GitHub token borrado.");
+      await api(`/v1/settings/git/github-token${tokenQ}`, { method: "DELETE" });
+      setMsg(`GitHub token de "${currentRepo}" borrado.`);
       load();
     } catch (err) {
       setError(err.message);
@@ -136,15 +158,15 @@ export default function GitSettings() {
       <h2>Configuración Git</h2>
       <p className="muted">
         Estado del repositorio del proyecto, conexión de remoto y preferencias de auto-commit.
-        Las preferencias son metadatos no secretos. El GitHub token se guarda cifrado (AES-GCM) en la
-        base de datos del servidor, nunca en el repo, y no se vuelve a mostrar.
+        Las preferencias son metadatos no secretos. Cada repositorio tiene su propio GitHub token, guardado
+        cifrado (AES-GCM) en la base de datos del servidor, nunca en el repo, y no se vuelve a mostrar.
       </p>
 
       {status.repos?.length > 1 && (
         <div className="card">
           <label>
             Repositorio
-            <select value={repo || status.repo || ""} onChange={(e) => setRepo(e.target.value)}>
+            <select value={currentRepo} onChange={(e) => changeRepo(e.target.value)}>
               {status.repos.map((r) => <option key={r} value={r}>{r}</option>)}
             </select>
           </label>
@@ -152,19 +174,21 @@ export default function GitSettings() {
       )}
 
       <div className="card">
-        <h4>GitHub token</h4>
+        <h4>Token de este repositorio: <code>{currentRepo}</code></h4>
         <p>
           Estado:{" "}
-          {status.github_token_configured ? (
+          {loading || status.github_token_configured === undefined ? (
+            <span className="muted">comprobando…</span>
+          ) : status.github_token_configured ? (
             <span className="ok">configurado{status.github_token_last4 ? ` (…${status.github_token_last4})` : ""}</span>
           ) : (
-            <span className="muted">sin configurar</span>
+            <span className="muted">sin token en este repo</span>
           )}
           {status.gh_authenticated ? <> · <small className="muted">gh autenticado en el host</small></> : null}
         </p>
         <form onSubmit={saveToken}>
           <label>
-            Personal Access Token (permiso de crear repos y escribir contenido)
+            Personal Access Token para «{currentRepo}» (permiso de crear repos y escribir contenido)
             <input
               type="password"
               placeholder="Pega aquí tu token de GitHub"
@@ -174,9 +198,9 @@ export default function GitSettings() {
               required
             />
           </label>
-          <small className="muted">Se cifra al guardar y no vuelve a salir del servidor. Guardar de nuevo lo reemplaza.</small>
+          <small className="muted">Solo se usa para «{currentRepo}» (crear remoto y push). Se cifra al guardar y no vuelve a salir del servidor. Guardar de nuevo lo reemplaza.</small>
           <div className="row">
-            <button>{status.github_token_configured ? "Reemplazar token" : "Guardar token"}</button>
+            <button disabled={loading}>{status.github_token_configured ? "Reemplazar token" : "Guardar token"}</button>
             {status.github_token_configured && (
               <button type="button" onClick={deleteToken}>Borrar token</button>
             )}
@@ -251,7 +275,7 @@ export default function GitSettings() {
         <div className="card">
           <h4>Crear repo remoto en GitHub</h4>
           <p className="muted">
-            Usa <code>gh</code> si está autenticado en el host; si no, el GitHub token guardado arriba (el nombre es obligatorio con token).
+            Usa <code>gh</code> si está autenticado en el host; si no, el token de este repositorio guardado arriba (el nombre es obligatorio con token).
           </p>
           <form onSubmit={createRemote}>
             <div className="row">
