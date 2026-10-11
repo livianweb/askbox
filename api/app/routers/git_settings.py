@@ -160,7 +160,7 @@ async def remote(
     created = None
     if body.create:
         prefs = gitops.load_preferences(path)
-        visibility = body.visibility or prefs.get("default_visibility") or "private"
+        visibility = body.visibility or prefs.get("default_visibility") or "public"
         if await asyncio.to_thread(gitops.gh_authenticated):
             ok, error = await asyncio.to_thread(
                 gitops.create_remote_with_gh, path, body.name, visibility, body.slug, body.push,

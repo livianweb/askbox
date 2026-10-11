@@ -3,7 +3,7 @@
   ensure-user EMAIL   crea el usuario si no existe (contraseña aleatoria inutilizable) y
                       imprime por stdout un enlace de reset de 24 h para que elija la suya.
   reset-link EMAIL    emite un enlace de reset de 24 h para un usuario existente.
-  git-setup EMAIL     crea/conecta remotos GitHub (token cifrado en BD) y pushea askbox + kit.
+  git-setup EMAIL [--repo NAME]  crea/conecta remoto GitHub y push; sin --repo hace askbox + kit.
 
 El enlace de reset es un secreto: redirigir stdout a un archivo con permisos 600, no pegarlo en chats/logs.
 git-setup imprime solo URLs y estado (nunca tokens).
@@ -24,7 +24,23 @@ from app.routers.git_settings import PRIMARY_REPO
 from app.security import hash_password
 
 
-async def _git_setup(email: str) -> int:
+def _parse_git_setup_argv(argv: list[str]) -> tuple[str | None, str | None]:
+    email: str | None = None
+    repo_filter: str | None = None
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--repo" and i + 1 < len(argv):
+            repo_filter = argv[i + 1]
+            i += 2
+        elif email is None:
+            email = argv[i]
+            i += 1
+        else:
+            return None, None
+    return email, repo_filter
+
+
+async def _git_setup(email: str, repo_filter: str | None = None) -> int:
     email = email.strip().lower()
     if not _EMAIL.match(email):
         print("email no válido", file=sys.stderr)
@@ -36,9 +52,14 @@ async def _git_setup(email: str) -> int:
             print("usuario no existe", file=sys.stderr)
             return 1
         specs = [
-            ("askbox", settings.repo_path, "askbox", "private"),
+            ("askbox", settings.repo_path, "askbox", "public"),
             ("cursor-agent-orchestrator", settings.extra_repos.get("cursor-agent-orchestrator", ""), "cursor-agent-orchestrator", "public"),
         ]
+        if repo_filter:
+            specs = [s for s in specs if s[0] == repo_filter]
+            if not specs:
+                print(f"repo desconocido: {repo_filter}", file=sys.stderr)
+                return 2
         report: list[dict] = []
         for repo_key, path, slug, visibility in specs:
             entry = {"repo": repo_key, "slug": slug, "visibility": visibility}
@@ -101,9 +122,16 @@ async def _main(cmd: str, email: str) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] not in {"ensure-user", "reset-link", "git-setup"}:
+    if len(sys.argv) < 3 or sys.argv[1] not in {"ensure-user", "reset-link", "git-setup"}:
         print(__doc__, file=sys.stderr)
         sys.exit(2)
     if sys.argv[1] == "git-setup":
-        sys.exit(asyncio.run(_git_setup(sys.argv[2])))
+        email, repo_filter = _parse_git_setup_argv(sys.argv[2:])
+        if not email:
+            print(__doc__, file=sys.stderr)
+            sys.exit(2)
+        sys.exit(asyncio.run(_git_setup(email, repo_filter)))
+    if len(sys.argv) != 3:
+        print(__doc__, file=sys.stderr)
+        sys.exit(2)
     sys.exit(asyncio.run(_main(sys.argv[1], sys.argv[2])))

@@ -24,7 +24,7 @@ _PREFS_REL_PATH = os.path.join(".askbox", "git-settings.json")
 _DEFAULT_PREFS = {
     "auto_commit": True,
     "remote_name": "origin",
-    "default_visibility": "private",
+    "default_visibility": "public",
     "last_push_at": None,
 }
 
@@ -283,6 +283,14 @@ def github_create_repo(
     if res.status_code == 401:
         return None, "github_token_invalid", "GitHub rechazó el token (inválido, revocado o caducado)."
     if res.status_code == 403:
+        if "resource not accessible by personal access token" in gh_msg.lower():
+            return (
+                None,
+                "github_forbidden",
+                "El PAT fine-grained no puede crear repos: en GitHub → Settings → Developer settings → "
+                "Fine-grained tokens, añade permiso de cuenta «Administration: Read and write» "
+                "(o usa un PAT clásico con alcance «repo»).",
+            )
         return None, "github_forbidden", "El token no tiene permisos para crear repos (necesita 'repo' / Administration: write)."
     if res.status_code == 422:
         return None, "github_repo_exists", f"GitHub no pudo crear el repo (¿ya existe ese nombre?): {redact(gh_msg, token)}"
@@ -337,3 +345,39 @@ def github_get_repo(token: str, owner: str, name: str) -> tuple[dict | None, str
     if res.status_code == 401:
         return None, "github_token_invalid", "GitHub rechazó el token (inválido, revocado o caducado)."
     return None, "github_error", f"GitHub respondió {res.status_code} al leer el repo."
+
+
+def github_patch_repo(
+    token: str, owner: str, name: str, private: bool,
+) -> tuple[dict | None, str | None, str | None]:
+    """PATCH /repos/{owner}/{name} — p. ej. visibilidad public/private."""
+    import httpx
+
+    try:
+        res = httpx.patch(
+            f"{GITHUB_API}/repos/{owner}/{name}",
+            headers=_github_headers(token),
+            json={"private": private},
+            timeout=20.0,
+        )
+    except httpx.HTTPError as exc:
+        return None, "github_unreachable", f"No se pudo contactar con GitHub ({type(exc).__name__})."
+    if res.status_code == 200:
+        data = res.json()
+        return {
+            "full_name": data.get("full_name"),
+            "html_url": data.get("html_url"),
+            "clone_url": data.get("clone_url"),
+            "private": bool(data.get("private")),
+        }, None, None
+    try:
+        gh_msg = str(res.json().get("message", ""))[:200]
+    except ValueError:
+        gh_msg = ""
+    if res.status_code == 401:
+        return None, "github_token_invalid", "GitHub rechazó el token (inválido, revocado o caducado)."
+    if res.status_code == 403:
+        return None, "github_forbidden", f"El token no puede modificar el repo: {redact(gh_msg, token)}"
+    if res.status_code == 404:
+        return None, "github_repo_not_found", f"No se encontró el repo '{owner}/{name}' en GitHub."
+    return None, "github_error", f"GitHub respondió {res.status_code}: {redact(gh_msg, token)}"
