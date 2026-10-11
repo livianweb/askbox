@@ -4,6 +4,7 @@ import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "../lib/api";
 import BrandLogo from "./BrandLogo";
+import ThemeToggle from "./ThemeToggle";
 
 export default function Nav() {
   const [me, setMe] = useState(null);
@@ -91,6 +92,7 @@ export default function Nav() {
         )}
 
         <div className="nav-user-actions">
+          <ThemeToggle />
           {me ? (
             <>
               <span className="user-email-pill" title={me.email}>

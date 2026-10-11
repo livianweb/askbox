@@ -1,5 +1,6 @@
 import "./globals.css";
 import Nav from "./Nav";
+import { THEME_INIT_SCRIPT } from "../lib/theme";
 
 export const metadata = {
   title: "askbox — Pasarela unificada LLM",
@@ -20,7 +21,10 @@ export const viewport = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="es">
+    <html lang="es" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body>
         <div className="app-wrapper">
           <Nav />
