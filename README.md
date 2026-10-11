@@ -1,6 +1,6 @@
 # askbox
 
-Gateway LLM mono-usuario: `POST /v1/ask` con cascada Gemini → OpenRouter, claves cifradas (AES-256-GCM) y traza en PostgreSQL.
+Gateway LLM mono-usuario: `POST /v1/ask` con peers por tier (Gemini, OpenRouter, OpenCode Zen), claves cifradas (AES-256-GCM) y traza en PostgreSQL.
 
 Licencia [MIT](LICENSE).
 
@@ -146,7 +146,8 @@ Variables que lee la API (`api/app/config.py` → `api/app/mailer.py`): `ASKBOX_
 
 ## Diseño (resumen)
 
-- `api/app/llm/`: `router.py` (caché → tier → `model_catalog` → keypool → proveedor), `providers/`, `keypool.py` (cooldown 429, `invalid` en 401), `cache.py` (Redis, TTL por proyecto, 0 = off), `catalog.py`.
+- `api/app/llm/`: `router.py` (caché → tier → peers same-class en todos los proveedores con clave → bajada de tier), `providers/` (gemini, openrouter, `opencode_zen`), `keypool.py`, `cache.py`, `catalog.py` (`peer_chain`).
+- OpenCode Zen: `OPENCODE_ZEN_API_KEY` opcional en servidor; modelos free también sin clave de proyecto. Endpoint configurable con `ASKBOX_OPENCODE_ZEN_API_URL` (por defecto `https://opencode.ai/zen/v1/chat/completions`).
 - Modelos y cadenas en la tabla `model_catalog` (seed en `001_init.sql`); editar filas en BD, no código.
 - Seguridad: AES-256-GCM con AAD `proyecto:proveedor`, nonce aleatorio, `key_version`; la API nunca devuelve claves; logs sin prompts (solo longitud y hash truncado).
 - Límites: prompt ≤ 20000 chars, `max_output_tokens` ≤ 8192, rate limit Redis (`ASKBOX_ASK_RATE_PER_MIN`, 30/min por usuario, token `ab_live_` y proyecto en `/v1/ask`; login 10/min por IP).

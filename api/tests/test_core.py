@@ -9,7 +9,8 @@ from app.crypto import CryptoError  # noqa: E402
 from app.llm.errors import classify  # noqa: E402
 from app.llm.keypool import KeyHandle  # noqa: E402
 from app.llm import cache  # noqa: E402
-from app.llm.router import infer_tier_from_text, next_tier  # noqa: E402
+from app.llm import catalog  # noqa: E402
+from app.llm.router import infer_tier_from_text, next_tier, prev_tier  # noqa: E402
 from app.ask_exec import _response_from_res  # noqa: E402
 from app.llm.schema_check import response_matches_schema  # noqa: E402
 from app.security import hash_password, verify_password  # noqa: E402
@@ -65,6 +66,20 @@ class MiscTests(unittest.TestCase):
         self.assertEqual(infer_tier_from_text("hola", 256, json_schema={"type": "object"}), "balanced")
         self.assertEqual(next_tier("fast"), "balanced")
         self.assertIsNone(next_tier("strong"))
+        self.assertEqual(prev_tier("balanced"), "fast")
+        self.assertIsNone(prev_tier("fast"))
+
+    def test_peer_order_cross_provider(self):
+        batch = [
+            ("openrouter", {"slug": "b", "max_output_tokens": 4096, "priority": 20}),
+            ("gemini", {"slug": "a", "max_output_tokens": 8192, "priority": 10}),
+            ("opencode_zen", {"slug": "c", "max_output_tokens": 8192, "priority": 10}),
+        ]
+        ordered = catalog.order_peer_batch(("gemini", "openrouter", "opencode_zen"), batch)
+        slugs = [(p, m["slug"]) for p, m in ordered]
+        self.assertEqual(slugs[0], ("gemini", "a"))
+        self.assertEqual(slugs[1][0], "opencode_zen")
+        self.assertEqual(slugs[2], ("openrouter", "b"))
 
     def test_schema_and_cache_key(self):
         schema = {"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean"}}}

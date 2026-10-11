@@ -15,9 +15,9 @@ description: Añadir o modificar modelos, niveles (tiers), cadenas de fallback, 
 
 | Tier | Uso típico | Cadena (concepto) |
 |------|------------|-------------------|
-| `fast` | Clasificación, extracción, respuestas cortas | Lite → flash → OpenRouter `:free` |
-| `balanced` | Redacción y resumen normales | Flash → lite → OpenRouter |
-| `strong` | Razonamiento, código, análisis largo | Pro → flash → OpenRouter de pago |
+| `fast` | Clasificación, extracción, respuestas cortas | Clase S (luego M) entre **todos** los proveedores con clave |
+| `balanced` | Redacción y resumen normales | Clase M (luego S), peers cross-provider |
+| `strong` | Razonamiento, código, análisis largo | Clase L (luego M, S), peers cross-provider |
 | `auto` | El sistema elige con señales baratas (longitud, `json_schema`, código en prompt, `max_output_tokens`, `default_tier` del proyecto) |
 
 ### Modo `auto` — escalada única
@@ -38,8 +38,16 @@ Por cada `POST /v1/ask`, respetar este orden:
 1. **Caché** — clave `sha256(project_id + prompt_rendered + tier + max_tokens + json_schema)` en Redis; TTL por proyecto.
 2. **Cooldown de clave** — excluir filas `api_keys` con `cooldown_until > now`; pool por proyecto.
 3. **Tier** — respetar el pedido o heurística en `auto`.
-4. **Modelo** — filas de `model_catalog` para ese tier, orden `priority`.
-5. **Proveedor** — cadena dentro del proveedor y fallback al siguiente proveedor.
+4. **Peers (provider-agnostic)** — `catalog.peer_chain`: por cada clase S|M|L del tier pedido, mezclar modelos de `gemini`, `openrouter`, `opencode_zen` (solo proveedores con clave utilizable), orden `priority` y desempate `PROVIDER_ORDER`.
+5. **Bajada de potencia** — si se agotan todos los peers del tier pedido, `prev_tier` (`strong`→`balanced`→`fast`) y repetir. No hay lógica «si Gemini → …».
+6. **Modo `auto`** — si sigue fallando tras bajadas, **una** escalada al tier superior (`next_tier`).
+
+### Proveedor OpenCode Zen
+
+- `provider` en BD/UI: `opencode_zen`.
+- Cliente: `api/app/llm/providers/opencode_zen.py` (OpenAI-compatible).
+- Clave de proyecto cifrada o `OPENCODE_ZEN_API_KEY` de sistema; modelos **free** permiten peer anónimo sin clave de proyecto.
+- Catálogo: migración `010_opencode_zen_provider.sql`; slugs según [docs Zen](https://opencode.ai/docs/zen/).
 
 ## Keypool y cooldown
 
@@ -62,7 +70,8 @@ Heredar el estilo de agentshop-x `gemini.py`:
 | Archivo | Responsabilidad |
 |---------|-----------------|
 | `api/app/llm/router.py` | Orquestación tier → cadena → respuesta unificada |
-| `api/app/llm/providers/` | Clientes Gemini, OpenRouter, etc. |
+| `api/app/llm/catalog.py` | `peer_chain`, `TIER_CLASSES`, orden cross-provider |
+| `api/app/llm/providers/` | Gemini, OpenRouter, OpenCode Zen |
 | `api/app/llm/keypool.py` | Selección de clave, cooldown, fallos consecutivos |
 | `api/app/llm/cache.py` | Lectura/escritura Redis de respuestas |
 

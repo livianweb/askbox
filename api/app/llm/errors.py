@@ -6,7 +6,16 @@ from __future__ import annotations
 #   auth  -> clave inválida (401/403 no cuota): marcar invalid
 #   retry -> fallo transitorio del modelo: probar siguiente modelo
 #   fatal -> petición mal formada u otro error no reintentable
-QUOTA_NEEDLES = ("quota", "rate limit", "rate-limit", "resource exhausted", "too many requests", "free-models-per-day")
+QUOTA_NEEDLES = (
+    "quota",
+    "rate limit",
+    "rate-limit",
+    "resource exhausted",
+    "too many requests",
+    "free-models-per-day",
+    "insufficient balance",
+    "account balance",
+)
 RETRY_NEEDLES = (
     "quota", "rate limit", "rate-limit", "resource exhausted", "high demand", "unavailable",
     "too many requests", "try again", "not found", "no longer available", "no endpoints",

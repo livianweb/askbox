@@ -1,7 +1,8 @@
-"""Orquestación LLM: caché → tier → modelos (model_catalog) → claves (keypool) → proveedor.
+"""Orquestación LLM: caché → tier → peers (model_catalog) → keypool → proveedor.
 
-Cascada: Gemini primero; si falla (cuota, clave inválida, sin clave) pasa a OpenRouter.
-Todas las llamadas a proveedores externas viven bajo app/llm/.
+Política provider-agnostic: para el tier pedido, peers de misma clase de potencia (S|M|L)
+entre todos los proveedores con clave; solo bajar de clase/tier cuando se agotan.
+Todas las llamadas externas viven bajo app/llm/.
 """
 from __future__ import annotations
 
@@ -13,13 +14,18 @@ from typing import Any
 from app.config import settings
 from app.llm import cache, catalog, keypool
 from app.llm.errors import LLMError
-from app.llm.providers import gemini, openrouter
+from app.llm.providers import gemini, openrouter, opencode_zen
 from app.llm.schema_check import response_matches_schema
 
 log = logging.getLogger(__name__)
 
-PROVIDER_ORDER = ("gemini", "openrouter")
-_PROVIDERS = {"gemini": gemini.complete, "openrouter": openrouter.complete}
+# Orden de desempate entre proveedores (no implica «fallar primero en X»).
+PROVIDER_ORDER = ("gemini", "openrouter", "opencode_zen")
+_PROVIDERS = {
+    "gemini": gemini.complete,
+    "openrouter": openrouter.complete,
+    "opencode_zen": opencode_zen.complete,
+}
 _CODE_HINT = re.compile(r"```|\bdef \w+\(|\bclass \w+|function\s+\w+\(|=>|#include|SELECT\s.+\sFROM", re.I | re.S)
 TIER_LADDER = ("fast", "balanced", "strong")
 
@@ -40,6 +46,14 @@ def next_tier(tier: str) -> str | None:
     except ValueError:
         return None
     return TIER_LADDER[i + 1] if i + 1 < len(TIER_LADDER) else None
+
+
+def prev_tier(tier: str) -> str | None:
+    try:
+        i = TIER_LADDER.index(tier)
+    except ValueError:
+        return None
+    return TIER_LADDER[i - 1] if i > 0 else None
 
 
 def infer_tier_from_text(
@@ -69,6 +83,125 @@ def _schema_key(json_schema: dict | None) -> str:
     return json.dumps(json_schema, sort_keys=True, separators=(",", ":"))
 
 
+def _handle_key_id(handle: keypool.KeyHandle) -> str | None:
+    return handle.key_id
+
+
+async def _cascade_peers(
+    pool,
+    redis,
+    *,
+    project: dict,
+    messages: list[dict],
+    effective_tier: str,
+    max_tokens: int,
+    json_schema: dict | None,
+    ttl: int,
+    ckey: str,
+) -> dict[str, Any]:
+    attempts = 0
+    errors: list[str] = []
+    fatal = False
+    models_tried: list[str] = []
+
+    provider_keys: dict[str, list[keypool.KeyHandle]] = {}
+    for provider in PROVIDER_ORDER:
+        keys = await keypool.candidates(pool, project, provider)
+        if keys:
+            provider_keys[provider] = keys
+
+    if not provider_keys:
+        raise AskFailure(
+            "No hay clave de proveedor utilizable (proyecto o sistema). "
+            "Añade una clave Gemini, OpenRouter u OpenCode Zen al proyecto.",
+            tier_used=effective_tier,
+            attempts=0,
+            kind="fatal",
+            code="no_provider_key",
+        )
+
+    active = tuple(p for p in PROVIDER_ORDER if p in provider_keys)
+    peers = await catalog.peer_chain(pool, effective_tier, active, settings.max_models_per_provider)
+    if not peers:
+        raise AskFailure(
+            "Sin modelos habilitados en model_catalog para este tier.",
+            tier_used=effective_tier,
+            attempts=0,
+            kind="fatal",
+            code="provider_failed",
+        )
+
+    dead_keys: dict[str, set[str | None]] = {p: set() for p in provider_keys}
+
+    for provider, model in peers:
+        call = _PROVIDERS[provider]
+        for handle in provider_keys[provider]:
+            kid = _handle_key_id(handle)
+            if kid in dead_keys[provider]:
+                continue
+            attempts += 1
+            tag = f"{provider}:{model['slug']}"
+            models_tried.append(tag)
+            try:
+                out = await call(
+                    messages,
+                    api_key=handle.secret,
+                    model=model["slug"],
+                    max_tokens=min(max_tokens, model["max_output_tokens"]),
+                )
+            except LLMError as exc:
+                errors.append(f"{tag}: {exc}")
+                log.warning("%s falló (%s): %s", tag, exc.kind, str(exc)[:160])
+                if exc.kind == "auth":
+                    await keypool.mark_invalid(pool, handle)
+                    dead_keys[provider].add(kid)
+                    continue
+                if exc.kind == "quota":
+                    await keypool.mark_quota(pool, handle, message=str(exc))
+                    dead_keys[provider].add(kid)
+                    continue
+                if exc.kind == "fatal":
+                    fatal = True
+                    continue
+                continue
+            text = (out.get("text") or "").strip()
+            if not response_matches_schema(text, json_schema):
+                errors.append(f"{tag}: respuesta vacía o no cumple json_schema")
+                continue
+            await keypool.mark_success(pool, handle)
+            cin, cout = await catalog.cost_for_model(pool, provider, out["model"])
+            in_tok = int(out.get("input_tokens") or 0)
+            out_tok = int(out.get("output_tokens") or 0)
+            cost = catalog.estimate_cost_usd(in_tok, out_tok, cin, cout)
+            result = {
+                "text": text,
+                "provider": provider,
+                "model_used": out["model"],
+                "input_tokens": in_tok,
+                "output_tokens": out_tok,
+                "estimated_cost_usd": cost,
+                "models_chain": models_tried,
+            }
+            await cache.put(redis, ckey, result, ttl)
+            return {
+                **result,
+                "cache_hit": False,
+                "tier_used": effective_tier,
+                "attempts": attempts,
+                "key_id": handle.key_id,
+                "key_source": handle.source,
+            }
+
+    summary = "; ".join(errors[-4:])[:600]
+    raise AskFailure(
+        f"Ningún peer respondió en tier {effective_tier}. {summary}",
+        tier_used=effective_tier,
+        attempts=attempts,
+        kind="fatal" if fatal else "retry",
+        code="provider_failed",
+    )
+
+
 async def _cascade(
     pool,
     redis,
@@ -82,95 +215,37 @@ async def _cascade(
     ttl: int,
     ckey: str,
 ) -> dict[str, Any]:
-    attempts = 0
-    errors: list[str] = []
-    any_key = False
-    fatal = False
-    models_tried: list[str] = []
-
-    for provider in PROVIDER_ORDER:
-        keys = await keypool.candidates(pool, project, provider)
-        if not keys:
-            errors.append(f"{provider}: sin clave disponible")
-            continue
-        any_key = True
-        models = await catalog.chain(pool, effective_tier, provider, settings.max_models_per_provider)
-        if not models:
-            errors.append(f"{provider}: sin modelos habilitados en model_catalog")
-            continue
-        call = _PROVIDERS[provider]
-        for handle in keys:
-            key_dead = False
-            for model in models:
-                attempts += 1
-                models_tried.append(f"{provider}:{model['slug']}")
-                try:
-                    out = await call(
-                        messages,
-                        api_key=handle.secret,
-                        model=model["slug"],
-                        max_tokens=min(max_tokens, model["max_output_tokens"]),
-                    )
-                except LLMError as exc:
-                    errors.append(f"{provider}: {exc}")
-                    log.warning("%s falló (%s): %s", provider, exc.kind, str(exc)[:160])
-                    if exc.kind == "auth":
-                        await keypool.mark_invalid(pool, handle)
-                        key_dead = True
-                        break
-                    if exc.kind == "quota":
-                        await keypool.mark_quota(pool, handle, message=str(exc))
-                        key_dead = True
-                        break
-                    if exc.kind == "fatal":
-                        fatal = True
-                        break
-                    continue
-                text = (out.get("text") or "").strip()
-                if not response_matches_schema(text, json_schema):
-                    errors.append(f"{provider}: respuesta vacía o no cumple json_schema")
-                    continue
-                await keypool.mark_success(pool, handle)
-                cin, cout = await catalog.cost_for_model(pool, provider, out["model"])
-                in_tok = int(out.get("input_tokens") or 0)
-                out_tok = int(out.get("output_tokens") or 0)
-                cost = catalog.estimate_cost_usd(in_tok, out_tok, cin, cout)
-                result = {
-                    "text": text,
-                    "provider": provider,
-                    "model_used": out["model"],
-                    "input_tokens": in_tok,
-                    "output_tokens": out_tok,
-                    "estimated_cost_usd": cost,
-                    "models_chain": models_tried,
-                }
-                await cache.put(redis, ckey, result, ttl)
-                return {
-                    **result,
-                    "cache_hit": False,
-                    "tier_used": effective_tier,
-                    "attempts": attempts,
-                    "key_id": handle.key_id,
-                    "key_source": handle.source,
-                }
-            if not key_dead:
-                break
-    if not any_key:
-        raise AskFailure(
-            "No hay clave de proveedor utilizable (proyecto o sistema). Añade una clave Gemini/OpenRouter al proyecto.",
-            tier_used=effective_tier,
-            attempts=attempts,
-            kind="fatal",
-            code="no_provider_key",
-        )
-    summary = "; ".join(errors[-4:])[:600]
-    raise AskFailure(
-        f"Ningún proveedor respondió. {summary}",
-        tier_used=effective_tier,
-        attempts=attempts,
-        kind="fatal" if fatal else "retry",
-        code="provider_failed",
-    )
+    tier_attempt = effective_tier
+    total_attempts = 0
+    while True:
+        try:
+            res = await _cascade_peers(
+                pool,
+                redis,
+                project=project,
+                messages=messages,
+                effective_tier=tier_attempt,
+                max_tokens=max_tokens,
+                json_schema=json_schema,
+                ttl=ttl,
+                ckey=ckey,
+            )
+            if tier_attempt != effective_tier:
+                res["tier_downgraded_from"] = effective_tier
+            return res
+        except AskFailure as exc:
+            total_attempts += exc.attempts
+            if exc.code == "no_provider_key":
+                raise
+            lower = prev_tier(tier_attempt)
+            if not lower:
+                exc.attempts = total_attempts
+                raise
+            log.info("cascada: bajada de tier %s → %s (peers agotados)", tier_attempt, lower)
+            tier_attempt = lower
+            ckey = cache.cache_key(
+                str(project["id"]), prompt_rendered, tier_attempt, max_tokens, _schema_key(json_schema)
+            )
 
 
 async def ask(

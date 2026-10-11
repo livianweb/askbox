@@ -9,20 +9,27 @@ from app.crypto import CryptoError, decrypt_secret
 
 log = logging.getLogger(__name__)
 
+_SYSTEM_KEYS = {
+    "gemini": lambda: settings.system_gemini_key,
+    "openrouter": lambda: settings.system_openrouter_key,
+    "opencode_zen": lambda: settings.system_opencode_zen_key,
+}
+
 
 @dataclass
 class KeyHandle:
     provider: str
     secret: str  # solo en memoria; nunca se loguea ni se serializa
-    key_id: str | None  # None = clave de sistema
-    source: str  # 'project' | 'system'
+    key_id: str | None  # None = clave de sistema / anónima Zen
+    source: str  # 'project' | 'system' | 'zen_anonymous'
 
     def __repr__(self) -> str:  # evita fugas accidentales en logs
         return f"KeyHandle(provider={self.provider!r}, key_id={self.key_id!r}, source={self.source!r})"
 
 
 def _system_key(provider: str) -> str:
-    return settings.system_gemini_key if provider == "gemini" else settings.system_openrouter_key
+    fn = _SYSTEM_KEYS.get(provider)
+    return fn() if fn else ""
 
 
 async def candidates(pool, project: dict, provider: str) -> list[KeyHandle]:
@@ -42,8 +49,15 @@ async def candidates(pool, project: dict, provider: str) -> list[KeyHandle]:
             log.error("clave %s no descifrable: %s", r["id"], exc)
             continue
         out.append(KeyHandle(provider, secret, str(r["id"]), "project"))
-    if project["allow_system_keys"] and _system_key(provider):
-        out.append(KeyHandle(provider, _system_key(provider), None, "system"))
+    sk = _system_key(provider)
+    if project["allow_system_keys"] and sk:
+        out.append(KeyHandle(provider, sk, None, "system"))
+    # OpenCode Zen: modelos free aceptan peticiones sin Bearer; permite peers sin clave de proyecto.
+    if not out and provider == "opencode_zen":
+        if sk:
+            out.append(KeyHandle(provider, sk, None, "system"))
+        else:
+            out.append(KeyHandle(provider, "", None, "zen_anonymous"))
     return out
 
 
