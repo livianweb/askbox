@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import Link from "next/link";
 import { api } from "../../lib/api";
 
 export default function Forgot() {
@@ -17,27 +18,64 @@ export default function Forgot() {
     setDevUrl("");
     try {
       const r = await api("/v1/auth/forgot", { method: "POST", body: { email } });
-      setMsg(r.message);
+      setMsg(r.message || "Enlace de restablecimiento generado.");
       if (r.reset_url) setDevUrl(r.reset_url); // solo si el servidor corre en modo desarrollo
     } catch (err) {
-      setError(err.status === 429 ? "Demasiados intentos; espera un minuto." : err.message);
+      setError(err.status === 429 ? "Demasiados intentos seguidos; espera un minuto antes de reintentar." : err.message);
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <form className="card" onSubmit={submit}>
-      <h2>Recuperar contraseña</h2>
-      <label>Email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="username" /></label>
-      {error && <p className="err">{error}</p>}
-      {msg && <p className="ok">{msg}</p>}
-      {devUrl && <p><small>Modo desarrollo: </small><a href={devUrl}>abrir enlace de restablecimiento</a></p>}
-      <div className="row">
-        <button disabled={busy}>Enviar enlace</button>
-      </div>
-      <p><a href="/login">Volver a entrar</a> · <a href="/register">Crear cuenta</a></p>
-      <small>Si el servidor no tiene SMTP, el enlace aparece en los logs de la API (<code>docker compose logs api</code>).</small>
-    </form>
+    <div className="auth-container">
+      <form className="card" onSubmit={submit}>
+        <div style={{ textAlign: "center", marginBottom: "1.25rem" }}>
+          <h2>Recuperar Contraseña</h2>
+          <p className="muted" style={{ margin: 0 }}>
+            Introduce tu email registrado para recibir el enlace de restablecimiento.
+          </p>
+        </div>
+
+        <label htmlFor="forgot-email">Correo Electrónico</label>
+        <input
+          id="forgot-email"
+          type="email"
+          placeholder="tu@correo.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+          autoComplete="username"
+        />
+
+        {error && <div className="err">{error}</div>}
+        {msg && <div className="ok">{msg}</div>}
+
+        {devUrl && (
+          <div className="info-box">
+            <strong>Modo desarrollo / servidor local:</strong>
+            <div style={{ marginTop: "0.25rem" }}>
+              <a href={devUrl}>Abrir enlace directo de restablecimiento →</a>
+            </div>
+          </div>
+        )}
+
+        <div style={{ marginTop: "1rem" }}>
+          <button type="submit" className="btn-primary" style={{ width: "100%" }} disabled={busy}>
+            {busy ? "Generando enlace…" : "Enviar enlace de recuperación →"}
+          </button>
+        </div>
+
+        <div style={{ marginTop: "1.25rem", textAlign: "center", fontSize: "0.86rem", borderTop: "1px solid var(--border-subtle)", paddingTop: "1rem" }}>
+          <Link href="/login" style={{ marginRight: "1rem" }}>Volver a entrar</Link>
+          <span className="muted">·</span>
+          <Link href="/register" style={{ marginLeft: "1rem" }}>Crear cuenta</Link>
+        </div>
+
+        <div style={{ marginTop: "1rem", fontSize: "0.78rem", color: "var(--text-muted)", lineHeight: 1.4 }}>
+          💡 <strong>Nota del sistema:</strong> Si el servidor no tiene configurado un servicio SMTP saliente, el enlace de recuperación se registra de forma segura en los logs de la API (<code>docker compose logs api</code>).
+        </div>
+      </form>
+    </div>
   );
 }

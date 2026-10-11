@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { api } from "../../../lib/api";
 
 export default function DeploySettingsPage() {
@@ -138,140 +139,230 @@ export default function DeploySettingsPage() {
     }
   }
 
-  if (!status && loading) return <main><p>Cargando…</p></main>;
+  if (!status && loading) {
+    return (
+      <div className="card" style={{ textAlign: "center", padding: "3rem" }}>
+        <div className="spinner" style={{ marginBottom: "1rem" }} />
+        <p className="muted">Cargando estado de despliegue…</p>
+      </div>
+    );
+  }
 
   return (
-    <main className="narrow">
-      <h1>Despliegue y acceso</h1>
-      <p>
-        <a href="/settings/git">Config. Git</a>
-      </p>
-      {error && <p className="error">{error}</p>}
-      {msg && <p className="ok">{msg}</p>}
+    <div>
+      {/* Header */}
+      <div className="card" style={{ marginBottom: "1.25rem" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.75rem" }}>
+          <div>
+            <h1>Despliegue y Acceso</h1>
+            <p style={{ margin: 0 }}>
+              Configuración de la URL pública, certificados seguros y túnel Cloudflare para acceso HTTPS remoto.
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            <Link href="/settings/git" className="btn btn-secondary btn-sm">
+              Config. Git →
+            </Link>
+          </div>
+        </div>
+      </div>
+
+      {error && <div className="err">{error}</div>}
+      {msg && <div className="ok">{msg}</div>}
 
       {!status?.repo_accessible && (
-        <p className="warn">
-          El repo no está montado en la API: solo lectura de variables de entorno. En Docker monta <code>/repo</code> como en
-          <code>docker-compose.yml</code>.
-        </p>
+        <div className="card" style={{ background: "var(--amber-tint)", borderColor: "var(--amber-500)" }}>
+          <strong style={{ color: "var(--amber-500)" }}>Aviso de montaje de repositorio:</strong>
+          <p style={{ margin: "0.25rem 0 0", fontSize: "0.85rem" }}>
+            El repo no está montado en la API: solo lectura de variables de entorno. En Docker monta <code>/repo</code> como en <code>docker-compose.yml</code>.
+          </p>
+        </div>
       )}
 
-      <section>
-        <h2>URL pública</h2>
-        <p>
-          Enlaces de recuperación de contraseña y cookies seguras. Si guardas aquí una URL <code>https://</code>, la API
-          usará cookies <code>Secure</code> aunque <code>ASKBOX_COOKIE_SECURE</code> en el contenedor siga en false hasta que
-          reinicies con el <code>.env</code> alineado.
+      {/* URL Pública */}
+      <div className="card">
+        <div className="card-header">
+          <h3 className="card-title">1. URL Pública</h3>
+          <span className="badge badge-petrol">Dominio</span>
+        </div>
+        <p style={{ fontSize: "0.88rem" }}>
+          Utilizada para generar enlaces de recuperación de contraseña y políticas de cookies seguras. Si configuras una URL <code>https://</code>, la API utilizará cookies <code>Secure</code>.
         </p>
+
         {status && (
-          <ul>
-            <li>Entorno (contenedor): <code>{status.env_public_url}</code></li>
-            <li>Efectiva ahora: <code>{status.effective_public_url}</code></li>
-            <li>Cookie Secure efectiva: <code>{String(status.effective_cookie_secure)}</code></li>
+          <ul className="clean-list" style={{ marginBottom: "1rem" }}>
+            <li>
+              <span>Entorno actual (contenedor):</span>
+              <code>{status.env_public_url}</code>
+            </li>
+            <li>
+              <span>URL efectiva en runtime:</span>
+              <code>{status.effective_public_url}</code>
+            </li>
+            <li>
+              <span>Cookie Secure efectiva:</span>
+              <span className={`badge ${status.effective_cookie_secure ? "badge-emerald" : "badge-slate"}`}>
+                {String(status.effective_cookie_secure)}
+              </span>
+            </li>
           </ul>
         )}
+
         <form onSubmit={savePreferences}>
-          <label>
-            public_url
-            <input
-              type="url"
-              value={publicUrl}
-              onChange={(e) => setPublicUrl(e.target.value)}
-              placeholder="http://localhost:8067 o https://tu-dominio"
-            />
-          </label>
-          <label className="checkbox">
+          <label htmlFor="input-pub-url">URL Pública del servicio</label>
+          <input
+            id="input-pub-url"
+            type="url"
+            value={publicUrl}
+            onChange={(e) => setPublicUrl(e.target.value)}
+            placeholder="http://localhost:8067 o https://tu-dominio.com"
+          />
+
+          <label className="checkbox-label" style={{ marginTop: "0.5rem" }}>
             <input
               type="checkbox"
               checked={tunnelEnabled}
               onChange={(e) => setTunnelEnabled(e.target.checked)}
             />
-            Uso Cloudflare Tunnel (informativo)
+            <span>Uso de Cloudflare Tunnel habilitado (informativo)</span>
           </label>
-          <button type="submit" disabled={!status?.repo_accessible}>Guardar preferencias</button>
-        </form>
-      </section>
 
-      <section>
-        <h2>Cloudflare Tunnel (automático)</h2>
-        <p>
-          Clon por defecto: <strong>sin</strong> túnel — accede por LAN en el puerto <code>8067</code>.
-          Para exponer por HTTPS con un clic: token de API Cloudflare con permisos
-          <strong> Account → Cloudflare Tunnel → Edit</strong> y <strong>Zone → DNS → Edit</strong> en tu dominio,
-          más el hostname público (p. ej. <code>askbox.tudominio.com</code>).
+          <div style={{ marginTop: "0.75rem" }}>
+            <button type="submit" className="btn-primary" disabled={!status?.repo_accessible}>
+              Guardar Preferencias
+            </button>
+          </div>
+        </form>
+      </div>
+
+      {/* Cloudflare Tunnel Automático */}
+      <div className="card">
+        <div className="card-header">
+          <h3 className="card-title">2. Cloudflare Tunnel (Aprovisionamiento Automático)</h3>
+          <span className="badge badge-emerald">HTTPS</span>
+        </div>
+        <p style={{ fontSize: "0.88rem" }}>
+          Por defecto, askbox opera localmente en el puerto <code>8067</code>. Para exponer el servicio con HTTPS de forma segura mediante Cloudflare Tunnel, introduce tu token de API con permisos <strong>Account → Cloudflare Tunnel → Edit</strong> y <strong>Zone → DNS → Edit</strong>.
         </p>
+
         {status && (
-          <ul>
-            <li>Tunnel ID: <code>{status.tunnel_id || "—"}</code></li>
-            <li>Hostname: <code>{status.tunnel_hostname || "—"}</code></li>
-            <li>cloudflared en ejecución: <code>{status.cloudflared_running ? "sí" : "no"}</code></li>
+          <ul className="clean-list" style={{ marginBottom: "1rem" }}>
             <li>
-              Token API CF (BD):{" "}
-              {status.cloudflare_api_token_configured
-                ? `···${status.cloudflare_api_token_last4}`
-                : "no configurado"}
+              <span>Tunnel ID:</span>
+              <code>{status.tunnel_id || "No aprovisionado"}</code>
             </li>
             <li>
-              Token connector (BD):{" "}
-              {status.tunnel_token_configured ? `···${status.tunnel_token_last4}` : "no configurado"}
+              <span>Hostname asignado:</span>
+              <code>{status.tunnel_hostname || "—"}</code>
+            </li>
+            <li>
+              <span>cloudflared en ejecución:</span>
+              <span className={`badge ${status.cloudflared_running ? "badge-emerald" : "badge-slate"}`}>
+                {status.cloudflared_running ? "Sí (Activo)" : "No"}
+              </span>
+            </li>
+            <li>
+              <span>Token API CF (BD cifrado):</span>
+              <span>
+                {status.cloudflare_api_token_configured
+                  ? `Configurado (···${status.cloudflare_api_token_last4})`
+                  : "No configurado"}
+              </span>
+            </li>
+            <li>
+              <span>Token Connector (BD):</span>
+              <span>
+                {status.tunnel_token_configured ? `Configurado (···${status.tunnel_token_last4})` : "No configurado"}
+              </span>
             </li>
           </ul>
         )}
-        <form onSubmit={saveCfApiToken}>
-          <label>
-            API token Cloudflare (se guarda cifrado; no se vuelve a mostrar)
-            <input
-              type="password"
-              value={cfApiToken}
-              onChange={(e) => setCfApiToken(e.target.value)}
-              autoComplete="off"
-              placeholder="Opcional si ya guardaste uno"
-            />
-          </label>
-          <button type="submit">Guardar token API</button>
-          {status?.cloudflare_api_token_configured && (
-            <button type="button" className="secondary" onClick={deleteCfApiToken}>Borrar token API</button>
-          )}
-        </form>
-        <form onSubmit={provisionTunnel}>
-          <label>
-            Hostname deseado
-            <input
-              type="text"
-              value={hostname}
-              onChange={(e) => setHostname(e.target.value)}
-              placeholder="askbox.tudominio.com"
-              required
-            />
-          </label>
-          <p className="hint">{status?.provision_hint}</p>
-          <button type="submit" disabled={!status?.repo_accessible || provisionLoading}>
-            {provisionLoading ? "Provisionando…" : "Crear / actualizar túnel"}
-          </button>
-        </form>
-        <p>{status?.env_hint}</p>
-        <pre>{status?.compose_hint || "docker compose --profile tunnel up -d cloudflared"}</pre>
-      </section>
 
-      <section>
-        <h2>Token del connector (manual)</h2>
-        <p>Solo si creaste el túnel en el panel de Zero Trust y quieres guardar el connector sin provision automático.</p>
-        <form onSubmit={saveConnectorToken}>
-          <label>
-            Token del connector
-            <input
-              type="password"
-              value={connectorTokenInput}
-              onChange={(e) => setConnectorTokenInput(e.target.value)}
-              autoComplete="off"
-            />
-          </label>
-          <button type="submit">Guardar token en BD</button>
-          {status?.tunnel_token_configured && (
-            <button type="button" className="secondary" onClick={deleteConnectorToken}>Borrar token de BD</button>
-          )}
+        <form onSubmit={saveCfApiToken} style={{ marginBottom: "1.25rem" }}>
+          <label htmlFor="input-cf-token">API Token de Cloudflare (cifrado con AES-GCM)</label>
+          <input
+            id="input-cf-token"
+            type="password"
+            value={cfApiToken}
+            onChange={(e) => setCfApiToken(e.target.value)}
+            autoComplete="off"
+            placeholder="Opcional si ya guardaste uno previamente"
+          />
+          <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
+            <button type="submit" className="btn-primary btn-sm">
+              Guardar Token API en BD
+            </button>
+            {status?.cloudflare_api_token_configured && (
+              <button type="button" className="btn-danger btn-sm" onClick={deleteCfApiToken}>
+                Borrar Token API
+              </button>
+            )}
+          </div>
         </form>
-      </section>
-    </main>
+
+        <form onSubmit={provisionTunnel}>
+          <label htmlFor="input-tunnel-host">Hostname público deseado</label>
+          <input
+            id="input-tunnel-host"
+            type="text"
+            value={hostname}
+            onChange={(e) => setHostname(e.target.value)}
+            placeholder="askbox.tudominio.com"
+            required
+          />
+          {status?.provision_hint && (
+            <p className="muted" style={{ fontSize: "0.82rem", margin: "0.25rem 0" }}>
+              {status.provision_hint}
+            </p>
+          )}
+          <div style={{ marginTop: "0.75rem" }}>
+            <button
+              type="submit"
+              className="btn-primary"
+              disabled={!status?.repo_accessible || provisionLoading}
+            >
+              {provisionLoading ? "Aprovisionando túnel…" : "Crear / Actualizar Túnel →"}
+            </button>
+          </div>
+        </form>
+
+        {status?.env_hint && (
+          <p style={{ marginTop: "1rem", fontSize: "0.85rem" }}>{status.env_hint}</p>
+        )}
+        <pre>{status?.compose_hint || "docker compose --profile tunnel up -d cloudflared"}</pre>
+      </div>
+
+      {/* Token del connector manual */}
+      <div className="card">
+        <div className="card-header">
+          <h3 className="card-title">3. Token del Connector (Manual)</h3>
+          <span className="badge badge-slate">Manual</span>
+        </div>
+        <p style={{ fontSize: "0.88rem" }}>
+          Solo si creaste el túnel manualmente en el panel de Cloudflare Zero Trust y prefieres registrar el connector token sin aprovisionamiento automático.
+        </p>
+        <form onSubmit={saveConnectorToken}>
+          <label htmlFor="input-conn-token">Token del Connector</label>
+          <input
+            id="input-conn-token"
+            type="password"
+            value={connectorTokenInput}
+            onChange={(e) => setConnectorTokenInput(e.target.value)}
+            autoComplete="off"
+            placeholder="eyJ..."
+          />
+          <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
+            <button type="submit" className="btn-primary btn-sm">
+              Guardar Token Connector
+            </button>
+            {status?.tunnel_token_configured && (
+              <button type="button" className="btn-danger btn-sm" onClick={deleteConnectorToken}>
+                Borrar Token de BD
+              </button>
+            )}
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }

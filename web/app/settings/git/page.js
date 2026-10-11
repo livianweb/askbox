@@ -1,6 +1,7 @@
 "use client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { api } from "../../../lib/api";
 
 const PRIMARY_REPO = "askbox";
@@ -107,7 +108,7 @@ function GitSettingsInner() {
     setMsg("");
     try {
       await api(`/v1/settings/git/push${q}`, { method: "POST", body: {} });
-      setMsg("Push realizado.");
+      setMsg("Push realizado correctamente.");
       load();
     } catch (err) {
       setError(err.message);
@@ -137,7 +138,7 @@ function GitSettingsInner() {
     try {
       await api(`/v1/settings/git/remote${q}`, { method: "POST", body: { name: remoteName, url: remoteUrl } });
       setRemoteUrl("");
-      setMsg("Remoto conectado.");
+      setMsg("Remoto conectado correctamente.");
       load();
     } catch (err) {
       setError(err.message);
@@ -162,9 +163,13 @@ function GitSettingsInner() {
 
   if (!status) {
     return (
-      <div>
-        <h2>Configuración Git</h2>
-        {error ? <p className="err">{error}</p> : <p className="muted">Cargando…</p>}
+      <div className="card" style={{ textAlign: "center", padding: "3rem" }}>
+        {error ? <div className="err">{error}</div> : (
+          <>
+            <div className="spinner" style={{ marginBottom: "1rem" }} />
+            <p className="muted">Cargando estado de Git…</p>
+          </>
+        )}
       </div>
     );
   }
@@ -173,54 +178,77 @@ function GitSettingsInner() {
 
   return (
     <div>
-      <h2>Configuración Git</h2>
-      <p className="muted">
-        Estado del repositorio del proyecto, conexión de remoto y preferencias de auto-commit.
-        Las preferencias son metadatos no secretos. Cada repositorio tiene su propio GitHub token, guardado
-        cifrado (AES-GCM) en la base de datos del servidor, nunca en el repo, y no se vuelve a mostrar.
-      </p>
+      {/* Header */}
+      <div className="card" style={{ marginBottom: "1.25rem" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.75rem" }}>
+          <div>
+            <h1>Configuración Git & GitOps</h1>
+            <p style={{ margin: 0 }}>
+              Estado del repositorio local, conexión con GitHub y preferencias de auto-commit / auto-push.
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            <Link href="/settings/deploy" className="btn btn-secondary btn-sm">
+              Despliegue y Acceso
+            </Link>
+          </div>
+        </div>
+      </div>
+
+      {msg && <div className="ok">{msg}</div>}
+      {error && <div className="err">{error}</div>}
 
       {status.repos?.length > 1 && (
         <div className="card">
-          <label>
-            Repositorio
-            <select value={displayRepo} onChange={(e) => changeRepo(e.target.value)}>
-              {status.repos.map((r) => <option key={r} value={r}>{r}</option>)}
-            </select>
-          </label>
+          <label htmlFor="select-git-repo">Repositorio activo</label>
+          <select id="select-git-repo" value={displayRepo} onChange={(e) => changeRepo(e.target.value)}>
+            {status.repos.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
         </div>
       )}
 
+      {/* Token GitHub */}
       <div className="card">
-        <h4>Token de este repositorio: <code>{displayRepo}</code></h4>
-        <p>
-          Estado:{" "}
+        <div className="card-header">
+          <h3 className="card-title">Token de GitHub para «{displayRepo}»</h3>
+          <span className="badge badge-petrol">Personal Access Token</span>
+        </div>
+        <p style={{ fontSize: "0.88rem" }}>
+          Estado actual:{" "}
           {loading || status.github_token_configured === undefined ? (
             <span className="muted">comprobando…</span>
           ) : status.github_token_configured ? (
-            <span className="ok">configurado{status.github_token_last4 ? ` (…${status.github_token_last4})` : ""}</span>
+            <span className="badge badge-emerald">
+              Configurado{status.github_token_last4 ? ` (…${status.github_token_last4})` : ""}
+            </span>
           ) : (
-            <span className="muted">sin token en este repo</span>
+            <span className="badge badge-slate">Sin token configurado en este repo</span>
           )}
-          {status.gh_authenticated ? <> · <small className="muted">gh autenticado en el host</small></> : null}
+          {status.gh_authenticated ? <> · <small className="muted">CLI gh autenticado en el host</small></> : null}
         </p>
+
         <form onSubmit={saveToken}>
-          <label>
-            Personal Access Token para «{displayRepo}» (permiso de crear repos y escribir contenido)
-            <input
-              type="password"
-              placeholder="Pega aquí tu token de GitHub"
-              value={tokenInput}
-              onChange={(e) => setTokenInput(e.target.value)}
-              autoComplete="new-password"
-              required
-            />
-          </label>
-          <small className="muted">Solo se usa para «{displayRepo}» (crear remoto y push). Se cifra al guardar y no vuelve a salir del servidor. Guardar de nuevo lo reemplaza.</small>
-          <div className="row">
-            <button disabled={loading}>{status.github_token_configured ? "Reemplazar token" : "Guardar token"}</button>
+          <label htmlFor="input-gh-token">Personal Access Token (permiso <code>repo</code>)</label>
+          <input
+            id="input-gh-token"
+            type="password"
+            placeholder="ghp_... o github_pat_..."
+            value={tokenInput}
+            onChange={(e) => setTokenInput(e.target.value)}
+            autoComplete="new-password"
+            required
+          />
+          <div className="field-desc">
+            Se cifra en el servidor con AES-GCM y solo se utiliza para crear repos y ejecutar push en «{displayRepo}».
+          </div>
+          <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem" }}>
+            <button type="submit" className="btn-primary btn-sm" disabled={loading}>
+              {status.github_token_configured ? "Reemplazar Token" : "Guardar Token Cifrado"}
+            </button>
             {status.github_token_configured && (
-              <button type="button" onClick={deleteToken}>Borrar token</button>
+              <button type="button" className="btn-danger btn-sm" onClick={deleteToken}>
+                Borrar Token
+              </button>
             )}
           </div>
         </form>
@@ -228,105 +256,182 @@ function GitSettingsInner() {
 
       {!status.available && (
         <div className="card">
-          <p className="err">No disponible: {status.reason}</p>
+          <div className="err">No disponible: {status.reason}</div>
         </div>
       )}
 
       {status.available && (
         <div className="card">
-          <h4>Estado</h4>
-          <p>
-            Rama: <strong>{status.branch || "—"}</strong>
-            {status.upstream ? <> · tracking: <strong>{status.upstream}</strong></> : null}
-            {" · "}
-            {status.dirty ? <span className="err">cambios sin commitear</span> : <span className="ok">sin cambios pendientes</span>}
-          </p>
-          <p>
-            Último commit:{" "}
-            {status.last_commit?.hash ? (
-              <code>{status.last_commit.hash}</code>
-            ) : (
-              <span className="muted">sin commits todavía</span>
+          <div className="card-header">
+            <h3 className="card-title">Estado del Árbol Git</h3>
+            <span className={`badge ${status.dirty ? "badge-rose" : "badge-emerald"}`}>
+              {status.dirty ? "Cambios pendientes" : "Limpio"}
+            </span>
+          </div>
+
+          <ul className="clean-list" style={{ marginBottom: "1rem" }}>
+            <li>
+              <span>Rama actual:</span>
+              <strong>{status.branch || "—"}</strong>
+              {status.upstream && <small className="muted"> (tracking: {status.upstream})</small>}
+            </li>
+            <li>
+              <span>Último commit:</span>
+              <span>
+                {status.last_commit?.hash ? <code>{status.last_commit.hash.slice(0, 7)}</code> : "—"}
+                {status.last_commit?.subject && ` — ${status.last_commit.subject}`}
+              </span>
+            </li>
+            {status.preferences?.last_push_at && (
+              <li>
+                <span>Último push:</span>
+                <small className="muted">{status.preferences.last_push_at}</small>
+              </li>
             )}
-            {status.last_commit?.subject && <> — {status.last_commit.subject}</>}
-            {status.last_commit?.date && <> · <small className="muted">{status.last_commit.date}</small></>}
-          </p>
-          {status.preferences?.last_push_at && (
-            <p><small className="muted">Último push registrado: {status.preferences.last_push_at}</small></p>
-          )}
-          <p><button type="button" onClick={pushRemote} disabled={!status.remotes?.length}>Push de la rama actual</button></p>
-          <h4>Remotos</h4>
+          </ul>
+
+          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1.25rem" }}>
+            <button
+              type="button"
+              className="btn-primary btn-sm"
+              onClick={pushRemote}
+              disabled={!status.remotes?.length}
+            >
+              Push de la rama actual ({status.branch})
+            </button>
+          </div>
+
+          <h4>Remotos Configurados</h4>
           {status.remotes?.length ? (
-            <ul>
+            <ul className="clean-list" style={{ marginTop: "0.5rem" }}>
               {status.remotes.map((r, i) => (
-                <li key={i}>{r.name} ({r.type}): <code>{r.url}</code></li>
+                <li key={i}>
+                  <div>
+                    <strong>{r.name}</strong> <span className="badge badge-slate">{r.type}</span>
+                    <div style={{ marginTop: "0.2rem" }}>
+                      <code style={{ fontSize: "0.8rem" }}>{r.url}</code>
+                    </div>
+                  </div>
+                </li>
               ))}
             </ul>
           ) : (
-            <p className="muted">Sin remotos configurados todavía.</p>
+            <p className="muted" style={{ fontSize: "0.85rem" }}>Sin remotos configurados todavía.</p>
           )}
         </div>
       )}
 
       {status.available && (
-        <div className="card">
-          <h4>Conectar remoto existente</h4>
-          <form onSubmit={connectRemote}>
-            <label>
-              URL del remoto
+        <div className="grid-2">
+          {/* Conectar remoto existente */}
+          <div className="card" style={{ margin: 0 }}>
+            <div className="card-header">
+              <h3 className="card-title">Conectar Remoto Existente</h3>
+            </div>
+            <form onSubmit={connectRemote}>
+              <label htmlFor="input-remote-url">URL del repositorio remoto</label>
               <input
+                id="input-remote-url"
                 type="password"
-                placeholder="https://usuario:token@github.com/usuario/repo.git"
+                placeholder="https://usuario:token@github.com/..."
                 value={remoteUrl}
                 onChange={(e) => setRemoteUrl(e.target.value)}
                 autoComplete="off"
                 required
               />
-            </label>
-            <small className="muted">Puede incluir credenciales embebidas; nunca se guardan ni se muestran de vuelta.</small>
-            <button>Conectar como &quot;{remoteName}&quot;</button>
-          </form>
+              <div className="field-desc">
+                Puede incluir credenciales embebidas; nunca se guardan en logs.
+              </div>
+              <div style={{ marginTop: "0.75rem" }}>
+                <button type="submit" className="btn-primary btn-sm">
+                  Conectar como &quot;{remoteName}&quot;
+                </button>
+              </div>
+            </form>
+          </div>
+
+          {/* Crear repo en GitHub */}
+          <div className="card" style={{ margin: 0 }}>
+            <div className="card-header">
+              <h3 className="card-title">Crear Repo en GitHub</h3>
+            </div>
+            <form onSubmit={createRemote}>
+              <div className="row" style={{ marginTop: 0 }}>
+                <div>
+                  <label htmlFor="input-slug">Nombre repo (opcional)</label>
+                  <input
+                    id="input-slug"
+                    placeholder="nombre-del-repo"
+                    value={slug}
+                    onChange={(e) => setSlug(e.target.value)}
+                    maxLength={100}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="select-vis">Visibilidad</label>
+                  <select id="select-vis" value={createVisibility} onChange={(e) => setCreateVisibility(e.target.value)}>
+                    <option value="private">Privado</option>
+                    <option value="public">Público</option>
+                  </select>
+                </div>
+              </div>
+              <label className="checkbox-label" style={{ marginTop: "0.5rem" }}>
+                <input
+                  type="checkbox"
+                  checked={pushNow}
+                  onChange={(e) => setPushNow(e.target.checked)}
+                />
+                <span>Hacer push inicial inmediatamente</span>
+              </label>
+              <div style={{ marginTop: "0.75rem" }}>
+                <button type="submit" className="btn-primary btn-sm">
+                  Crear Repo Remoto →
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
-      {status.available && (
-        <div className="card">
-          <h4>Crear repo remoto en GitHub</h4>
-          <p className="muted">
-            Usa <code>gh</code> si está autenticado en el host; si no, el token de este repositorio guardado arriba (el nombre es obligatorio con token).
-          </p>
-          <form onSubmit={createRemote}>
-            <div className="row">
-              <input placeholder="nombre-repo (opcional)" value={slug} onChange={(e) => setSlug(e.target.value)} maxLength={100} />
-              <select value={createVisibility} onChange={(e) => setCreateVisibility(e.target.value)}>
+      {/* Preferencias de Auto-commit */}
+      <div className="card" style={{ marginTop: "1.5rem" }}>
+        <div className="card-header">
+          <h3 className="card-title">Preferencias de Auto-Commit</h3>
+        </div>
+        <form onSubmit={savePreferences}>
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={autoCommit}
+              onChange={(e) => setAutoCommit(e.target.checked)}
+            />
+            <span>Auto-commit y auto-push habilitados (git-autopilot)</span>
+          </label>
+          <div className="row" style={{ marginTop: "0.5rem" }}>
+            <div>
+              <label htmlFor="pref-remote">Nombre del remoto predeterminado</label>
+              <input
+                id="pref-remote"
+                value={remoteName}
+                onChange={(e) => setRemoteName(e.target.value)}
+                maxLength={50}
+              />
+            </div>
+            <div>
+              <label htmlFor="pref-vis">Visibilidad por defecto</label>
+              <select id="pref-vis" value={visibility} onChange={(e) => setVisibility(e.target.value)}>
                 <option value="private">Privado</option>
                 <option value="public">Público</option>
               </select>
             </div>
-            <label><input type="checkbox" style={{ width: "auto" }} checked={pushNow} onChange={(e) => setPushNow(e.target.checked)} /> Pushear ahora</label>
-            <button>Crear repo</button>
-          </form>
-        </div>
-      )}
-
-      <div className="card">
-        <h4>Preferencias</h4>
-        <form onSubmit={savePreferences}>
-          <label><input type="checkbox" style={{ width: "auto" }} checked={autoCommit} onChange={(e) => setAutoCommit(e.target.checked)} /> Auto-commit habilitado para este proyecto</label>
-          <label>Nombre del remoto<input value={remoteName} onChange={(e) => setRemoteName(e.target.value)} maxLength={50} /></label>
-          <label>
-            Visibilidad por defecto al crear repos
-            <select value={visibility} onChange={(e) => setVisibility(e.target.value)}>
-              <option value="private">Privado</option>
-              <option value="public">Público</option>
-            </select>
-          </label>
-          <button>Guardar preferencias</button>
+          </div>
+          <div style={{ marginTop: "0.75rem" }}>
+            <button type="submit" className="btn-primary btn-sm">
+              Guardar Preferencias
+            </button>
+          </div>
         </form>
       </div>
-
-      {msg && <p className="ok">{msg}</p>}
-      {error && <p className="err">{error}</p>}
     </div>
   );
 }
@@ -335,9 +440,9 @@ export default function GitSettings() {
   return (
     <Suspense
       fallback={
-        <div>
-          <h2>Configuración Git</h2>
-          <p className="muted">Cargando…</p>
+        <div className="card" style={{ textAlign: "center", padding: "3rem" }}>
+          <div className="spinner" style={{ marginBottom: "1rem" }} />
+          <p className="muted">Cargando configuración Git…</p>
         </div>
       }
     >
