@@ -47,5 +47,12 @@ async def send_mail(to: str, subject: str, body: str) -> bool:
         await asyncio.to_thread(_send_sync, to, subject, body)
         return True
     except Exception as exc:  # noqa: BLE001 - nunca volcar credenciales ni cuerpo
-        log.error("fallo enviando email de recuperación: %s", type(exc).__name__)
+        detail = str(exc).replace(settings.smtp_password, "***") if settings.smtp_password else str(exc)
+        if len(detail) > 300:
+            detail = detail[:300] + "…"
+        log.error(
+            "fallo enviando email de recuperación: %s — %s",
+            type(exc).__name__,
+            detail,
+        )
         return False

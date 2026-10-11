@@ -133,8 +133,8 @@ async def forgot(body: ForgotBody, request: Request):
         f"Usa este enlace para elegir una nueva contraseña (caduca en {settings.reset_ttl_minutes} min):\n\n{url}\n\n"
         "Si no lo pediste tú, ignora este mensaje.",
     )
-    if not sent and settings.log_reset_link and not mailer.smtp_configured():
-        # Sin SMTP: el operador recoge el enlace en los logs del servidor (nunca va al cliente).
+    if not sent and settings.log_reset_link:
+        # Sin SMTP o fallo de envío: el operador recoge el enlace en logs (nunca va al cliente).
         log.warning("RESET_LINK email=%s url=%s", email, url)
     if settings.dev_show_reset_token:
         out["reset_url"] = url  # solo desarrollo local
