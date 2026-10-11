@@ -1,9 +1,13 @@
 """Dependencias FastAPI: pool, redis y usuario autenticado (cookie o Bearer)."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Literal
+
 from fastapi import HTTPException, Request
 
 from app.config import settings
+from app.project_auth import has_scope, lookup_access_token
 from app.security import token_hash
 
 
@@ -37,3 +41,46 @@ def client_ip(request: Request) -> str:
     if fwd:
         return fwd.split(",")[0].strip()[:64]
     return (request.client.host if request.client else "unknown")[:64]
+
+
+def _bearer_token(request: Request) -> str | None:
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip() or None
+    return None
+
+
+@dataclass
+class AskAuth:
+    mode: Literal["session", "access_token"]
+    user_id: object
+    project_id: object | None
+    access_token_id: object | None
+    scopes: list[str]
+
+
+async def ask_auth(request: Request) -> AskAuth:
+    """Sesión de usuario o Bearer ab_live_ con scope ask:read (proyecto fijado por el token)."""
+    pool = request.app.state.pool
+    bearer = _bearer_token(request)
+    if bearer and bearer.startswith("ab_live_"):
+        ctx = await lookup_access_token(pool, bearer)
+        if not ctx:
+            raise err(401, "unauthenticated", "Token de proyecto inválido o revocado.")
+        if not has_scope(ctx["scopes"], "ask:read"):
+            raise err(403, "forbidden", "El token no tiene scope ask:read.")
+        return AskAuth(
+            mode="access_token",
+            user_id=ctx["user_id"],
+            project_id=ctx["project_id"],
+            access_token_id=ctx["access_token_id"],
+            scopes=ctx["scopes"],
+        )
+    user = await current_user(request)
+    return AskAuth(
+        mode="session",
+        user_id=user["id"],
+        project_id=None,
+        access_token_id=None,
+        scopes=[],
+    )

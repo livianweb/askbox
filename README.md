@@ -6,6 +6,7 @@ Licencia [MIT](LICENSE).
 
 - **Fase 0**: andamiaje (API FastAPI, web Next.js, PostgreSQL, Redis, worker arq).
 - **Fase 1 (MVP)**: auth, proyectos, claves cifradas, `/v1/ask`, UI mínima.
+- **Fase 2**: tokens de proyecto (`ab_live_…`), plantillas de prompt versionadas, rate limit por token/proyecto, UI en `/projects`.
 
 ## Arranque
 
@@ -55,7 +56,13 @@ En Docker, el contenedor `api` no lee `.env` del repo (está enmascarado). Para 
 | GET/POST | `/v1/projects` | Listar / crear proyecto |
 | GET/POST | `/v1/projects/{id}/keys` | Listar (solo `last4`, `status`, `label`, `provider`) / alta de clave (se cifra) |
 | DELETE | `/v1/projects/{id}/keys/{key_id}` | Borrar clave |
-| POST | `/v1/ask` | `{prompt, system?, project_id?, tier: auto\|fast\|balanced\|strong, max_output_tokens}` |
+| GET/POST | `/v1/projects/{id}/access-tokens` | Listar metadatos (`prefix`, `scopes`, `last4` vía prefix) / crear token (`ab_live_…` solo en la respuesta POST) |
+| DELETE | `/v1/projects/{id}/access-tokens/{token_id}` | Revocar token de proyecto |
+| GET/POST | `/v1/projects/{id}/prompts` | Listar última versión por nombre / crear nueva versión (`name`, `system_prompt`, `user_template`, `default_tier`) |
+| GET | `/v1/projects/{id}/prompts/{name}` | Última versión (`?version=N` opcional) |
+| GET | `/v1/projects/{id}/prompts/{name}/versions` | Historial de versiones |
+| DELETE | `/v1/projects/{id}/prompts/{name}` | Borrar todas las versiones |
+| POST | `/v1/ask` | Sesión o `Authorization: Bearer ab_live_…` (scope `ask:read`). Cuerpo: `prompt` **o** `prompt_template` + `variables`, `system?`, `project_id?` (ignorado con token de proyecto), `tier`, `max_output_tokens` |
 | GET | `/v1/requests` | Trazas recientes (sin prompts) |
 | GET | `/v1/settings/git/status` | Estado del repo del proyecto: branch, remotos (URL sin credenciales), último commit, preferencias |
 | PATCH | `/v1/settings/git/preferences` | `{auto_commit?, remote_name?, default_visibility?}` — guardadas en `.askbox/git-settings.json` (no secreto, versionable) |
@@ -88,6 +95,11 @@ PID=$(curl -b cj -s $J -d '{"name":"demo"}' $A/v1/projects | python3 -c 'import 
 curl -b cj -s $J -d '{"provider":"gemini","key":"<TU_CLAVE>"}' $A/v1/projects/$PID/keys
 curl -b cj -s $J -d "{\"project_id\":\"$PID\",\"prompt\":\"Di hola\",\"tier\":\"fast\"}" $A/v1/ask
 curl -b cj -s $A/v1/requests
+
+# Fase 2: token de proyecto y plantilla
+TOK=$(curl -b cj -s $J -d '{"label":"script","scopes":["ask:read"]}' $A/v1/projects/$PID/access-tokens | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+curl -b cj -s $J -d '{"name":"saludo","user_template":"Hola {{quien}}","default_tier":"fast"}' $A/v1/projects/$PID/prompts
+curl -s $J -H "Authorization: Bearer $TOK" -d '{"prompt_template":"saludo","variables":{"quien":"mundo"}}' $A/v1/ask
 ```
 
 Sin clave de proveedor, `/v1/ask` responde `502 no_provider_key` y deja la traza en `requests`. Con claves de sistema (`GEMINI_API_KEY` / `OPENROUTER_API_KEY` en `.env`) y proyecto con `allow_system_keys=true`, se usan como respaldo.
@@ -122,7 +134,8 @@ Variables que lee la API (`api/app/config.py` → `api/app/mailer.py`): `ASKBOX_
 - `api/app/llm/`: `router.py` (caché → tier → `model_catalog` → keypool → proveedor), `providers/`, `keypool.py` (cooldown 429, `invalid` en 401), `cache.py` (Redis, TTL por proyecto, 0 = off), `catalog.py`.
 - Modelos y cadenas en la tabla `model_catalog` (seed en `001_init.sql`); editar filas en BD, no código.
 - Seguridad: AES-256-GCM con AAD `proyecto:proveedor`, nonce aleatorio, `key_version`; la API nunca devuelve claves; logs sin prompts (solo longitud y hash truncado).
-- Límites: prompt ≤ 20000 chars, `max_output_tokens` ≤ 8192, rate limit Redis (`ASKBOX_ASK_RATE_PER_MIN`, 30 por defecto; login 10/min por IP).
+- Límites: prompt ≤ 20000 chars, `max_output_tokens` ≤ 8192, rate limit Redis (`ASKBOX_ASK_RATE_PER_MIN`, 30/min por usuario, token `ab_live_` y proyecto en `/v1/ask`; login 10/min por IP).
+- Tokens de proyecto: prefijo `ab_live_`, SHA-256 en `project_access_tokens`; scopes `ask:read`, `prompts:write`, `keys:write`, `usage:read` (gestión UI con sesión; `/v1/ask` con Bearer de token).
 - Tras HTTPS, poner `ASKBOX_COOKIE_SECURE=true` en `.env` (o guardar `public_url` https en `/settings/deploy`; la API usa cookies `Secure` según la URL efectiva aunque el contenedor no se haya reiniciado).
 - Pendiente (fases siguientes): escalada única en `auto`, `json_schema`, multiusuario, uso del worker.
 
