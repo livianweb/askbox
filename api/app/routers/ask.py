@@ -13,6 +13,7 @@ from app.deps import AskAuth, ask_auth, current_user, err
 from app.llm import router as llm_router
 from app.llm.errors import LLMError
 from app.prompt_render import PromptRenderError, render_template
+from app import usage as usage_agg
 from app.routers.projects import get_project
 
 router = APIRouter(prefix="/v1", tags=["ask"])
@@ -26,6 +27,7 @@ class AskIn(BaseModel):
     project_id: str | None = None
     tier: str = Field(default="auto", pattern="^(auto|fast|balanced|strong)$")
     max_output_tokens: int = Field(default=512, ge=1)
+    json_schema: dict | None = Field(default=None, description="Si se envía, tier=auto lo considera y valida la respuesta JSON.")
 
     @model_validator(mode="after")
     def _prompt_or_template(self):
@@ -41,11 +43,13 @@ class AskIn(BaseModel):
 async def _log_request(pool, **f) -> str:
     return str(await pool.fetchval(
         "INSERT INTO requests(user_id, project_id, access_token_id, tier_requested, tier_used, status, provider, model_used, key_id, "
-        "key_source, prompt_chars, prompt_hash, response_chars, latency_ms, cache_hit, attempts, error_code, error_message) "
-        "VALUES ($1,$2,$3::uuid,$4,$5,$6,$7,$8,$9::uuid,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id",
+        "key_source, prompt_chars, prompt_hash, response_chars, latency_ms, cache_hit, attempts, "
+        "input_tokens, output_tokens, estimated_cost_usd, error_code, error_message) "
+        "VALUES ($1,$2,$3::uuid,$4,$5,$6,$7,$8,$9::uuid,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id",
         f["user_id"], f.get("project_id"), f.get("access_token_id"), f["tier_requested"], f.get("tier_used"), f["status"],
         f.get("provider"), f.get("model_used"), f.get("key_id"), f.get("key_source"), f["prompt_chars"], f["prompt_hash"],
         f.get("response_chars"), f.get("latency_ms"), f.get("cache_hit", False), f.get("attempts", 0),
+        f.get("input_tokens"), f.get("output_tokens"), f.get("estimated_cost_usd"),
         f.get("error_code"), (f.get("error_message") or None) and f["error_message"][:500],
     ))
 
@@ -129,12 +133,13 @@ async def ask(body: AskIn, request: Request, auth: AskAuth = Depends(ask_auth)):
     try:
         res = await llm_router.ask(
             pool, redis, project=dict(project), messages=messages,
-            tier=tier_for_llm, max_tokens=body.max_output_tokens,
+            tier=tier_for_llm, max_tokens=body.max_output_tokens, json_schema=body.json_schema,
         )
     except llm_router.AskFailure as exc:
+        latency_err = int((time.monotonic() - started) * 1000)
         rid = await _log_request(pool, **base, status="error", tier_used=exc.tier_used, attempts=exc.attempts,
-                                 latency_ms=int((time.monotonic() - started) * 1000),
-                                 error_code=exc.code, error_message=str(exc))
+                                 latency_ms=latency_err, error_code=exc.code, error_message=str(exc))
+        await usage_agg.record(pool, project_id=project["id"], ok=False, cache_hit=False)
         raise err(502, exc.code, f"{exc} (request_id={rid})") from None
     except LLMError as exc:
         rid = await _log_request(pool, **base, status="error", latency_ms=int((time.monotonic() - started) * 1000),
@@ -146,16 +151,35 @@ async def ask(body: AskIn, request: Request, auth: AskAuth = Depends(ask_auth)):
         pool, **base, status="ok", tier_used=res["tier_used"], provider=res["provider"], model_used=res["model_used"],
         key_id=res["key_id"], key_source=res["key_source"], response_chars=len(res["text"]), latency_ms=latency,
         cache_hit=res["cache_hit"], attempts=res["attempts"],
+        input_tokens=res.get("input_tokens"), output_tokens=res.get("output_tokens"),
+        estimated_cost_usd=res.get("estimated_cost_usd"),
+    )
+    await usage_agg.record(
+        pool,
+        project_id=project["id"],
+        ok=True,
+        cache_hit=bool(res["cache_hit"]),
+        input_tokens=int(res.get("input_tokens") or 0),
+        output_tokens=int(res.get("output_tokens") or 0),
+        estimated_cost_usd=float(res.get("estimated_cost_usd") or 0),
     )
     if auth.access_token_id:
         await pool.execute(
             "UPDATE project_access_tokens SET last_used_at = $2 WHERE id = $1",
             auth.access_token_id, datetime.now(timezone.utc),
         )
-    return {
+    out = {
         "request_id": rid, "text": res["text"], "provider": res["provider"], "model_used": res["model_used"],
         "tier_used": res["tier_used"], "cache_hit": res["cache_hit"], "latency_ms": latency,
+        "input_tokens": res.get("input_tokens") or 0,
+        "output_tokens": res.get("output_tokens") or 0,
+        "estimated_cost_usd": res.get("estimated_cost_usd") or 0.0,
     }
+    if res.get("tier_escalated_from"):
+        out["tier_escalated_from"] = res["tier_escalated_from"]
+    if res.get("models_chain"):
+        out["models_chain"] = res["models_chain"]
+    return out
 
 
 @router.get("/requests")

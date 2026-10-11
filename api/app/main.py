@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.crypto import master_key_ready
 from app.db import create_pool, run_migrations
-from app.routers import access_tokens, ask, auth, deploy_settings, git_settings, projects, prompts
+from app.routers import access_tokens, ask, auth, deploy_settings, git_settings, projects, prompts, usage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("askbox")
@@ -40,6 +40,7 @@ app.include_router(projects.router)
 app.include_router(access_tokens.router)
 app.include_router(prompts.router)
 app.include_router(ask.router)
+app.include_router(usage.router)
 app.include_router(git_settings.router)
 app.include_router(deploy_settings.router)
 

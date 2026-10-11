@@ -57,7 +57,13 @@ export default function Playground() {
       {result && (
         <>
           <pre>{result.text}</pre>
-          <small>{result.provider} · {result.model_used} · tier {result.tier_used} · {result.latency_ms} ms{result.cache_hit ? " · caché" : ""} · {result.request_id}</small>
+          <small>
+            {result.provider} · {result.model_used} · tier {result.tier_used}
+            {result.tier_escalated_from ? ` (escalado desde ${result.tier_escalated_from})` : ""}
+            · {result.latency_ms} ms{result.cache_hit ? " · caché" : ""}
+            {result.models_chain?.length ? ` · cadena: ${result.models_chain.join(" → ")}` : ""}
+            · {result.request_id}
+          </small>
         </>
       )}
     </form>

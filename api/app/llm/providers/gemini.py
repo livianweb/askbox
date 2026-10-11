@@ -72,4 +72,7 @@ async def complete(messages: list[dict], *, api_key: str, model: str, max_tokens
         raise LLMError(f"{model}: respuesta de Gemini no válida", kind="retry") from None
     if not text:
         raise LLMError(f"{model}: respuesta vacía", kind="retry")
-    return {"text": text, "model": model}
+    usage = data.get("usageMetadata") if isinstance(data, dict) else {}
+    in_tok = int((usage or {}).get("promptTokenCount") or 0)
+    out_tok = int((usage or {}).get("candidatesTokenCount") or 0)
+    return {"text": text, "model": model, "input_tokens": in_tok, "output_tokens": out_tok}

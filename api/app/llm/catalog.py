@@ -28,3 +28,22 @@ async def chain(pool, tier: str, provider: str, limit: int) -> list[dict]:
         if len(out) >= limit:
             break
     return out
+
+
+async def cost_for_model(pool, provider: str, slug: str) -> tuple[float, float]:
+    """Coste USD por millón de tokens (entrada, salida); 0 si no hay fila."""
+    row = await pool.fetchrow(
+        "SELECT cost_in_per_mtok, cost_out_per_mtok FROM model_catalog "
+        "WHERE enabled AND provider = $1 AND slug = $2 ORDER BY priority LIMIT 1",
+        provider,
+        slug,
+    )
+    if not row:
+        return 0.0, 0.0
+    cin = float(row["cost_in_per_mtok"] or 0)
+    cout = float(row["cost_out_per_mtok"] or 0)
+    return cin, cout
+
+
+def estimate_cost_usd(input_tokens: int, output_tokens: int, cin: float, cout: float) -> float:
+    return (input_tokens * cin + output_tokens * cout) / 1_000_000.0

@@ -137,7 +137,7 @@ Variables que lee la API (`api/app/config.py` → `api/app/mailer.py`): `ASKBOX_
 - Límites: prompt ≤ 20000 chars, `max_output_tokens` ≤ 8192, rate limit Redis (`ASKBOX_ASK_RATE_PER_MIN`, 30/min por usuario, token `ab_live_` y proyecto en `/v1/ask`; login 10/min por IP).
 - Tokens de proyecto: prefijo `ab_live_`, SHA-256 en `project_access_tokens`; scopes `ask:read`, `prompts:write`, `keys:write`, `usage:read` (gestión UI con sesión; `/v1/ask` con Bearer de token).
 - Tras HTTPS, poner `ASKBOX_COOKIE_SECURE=true` en `.env` (o guardar `public_url` https en `/settings/deploy`; la API usa cookies `Secure` según la URL efectiva aunque el contenedor no se haya reiniciado).
-- Pendiente (fases siguientes): escalada única en `auto`, `json_schema`, multiusuario, uso del worker.
+- **Fase 3 (routing):** `tier=auto` infiere `fast|balanced|strong` (longitud, código, `max_output_tokens`, `json_schema`, `default_tier` del proyecto) y **escala una sola vez** al siguiente nivel si la cascada falla. Caché Redis con clave que incluye `json_schema`. Keypool con cooldown `min(900, max(60, 2^n·60))` y `exhausted`. `usage_daily` + `GET /v1/projects/{id}/usage`. Respuesta de `/v1/ask` incluye `cache_hit`, tokens y `models_chain` opcional.
 
 ## Configuración Git del proyecto (`/settings/git`)
 

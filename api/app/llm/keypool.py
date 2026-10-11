@@ -55,14 +55,19 @@ async def mark_success(pool, handle: KeyHandle) -> None:
         )
 
 
-async def mark_quota(pool, handle: KeyHandle) -> None:
-    if handle.key_id:
-        await pool.execute(
-            "UPDATE api_keys SET consecutive_failures = consecutive_failures + 1, last_used_at = now(), "
-            "cooldown_until = now() + make_interval(secs => LEAST(900, GREATEST(60, power(2, consecutive_failures + 1) * 60))) "
-            "WHERE id = $1",
-            handle.key_id,
-        )
+async def mark_quota(pool, handle: KeyHandle, *, message: str = "") -> None:
+    if not handle.key_id:
+        return
+    row = await pool.fetchrow(
+        "UPDATE api_keys SET consecutive_failures = consecutive_failures + 1, last_used_at = now(), "
+        "cooldown_until = now() + make_interval(secs => LEAST(900, GREATEST(60, power(2, consecutive_failures + 1) * 60))) "
+        "WHERE id = $1 RETURNING consecutive_failures",
+        handle.key_id,
+    )
+    failures = int(row["consecutive_failures"]) if row else 0
+    msg = (message or "").lower()
+    if failures >= 6 or ("exhausted" in msg and failures >= 2):
+        await pool.execute("UPDATE api_keys SET status = 'exhausted' WHERE id = $1", handle.key_id)
 
 
 async def mark_invalid(pool, handle: KeyHandle) -> None:
