@@ -2,10 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  applyResolvedTheme,
   getResolvedTheme,
-  getSystemTheme,
-  getThemeCookie,
   migrateLegacyThemeStorage,
   setThemeCookie,
 } from "../lib/theme";
@@ -49,18 +46,6 @@ export default function ThemeToggle() {
     migrateLegacyThemeStorage();
     syncResolved();
   }, [syncResolved]);
-
-  useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => {
-      if (!getThemeCookie()) {
-        applyResolvedTheme(getSystemTheme());
-        setResolved(getSystemTheme());
-      }
-    };
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
 
   const toggle = useCallback(() => {
     const next = resolved === "light" ? "dark" : "light";

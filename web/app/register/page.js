@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "../../lib/api";
@@ -12,6 +12,13 @@ export default function Register() {
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [monoUserInstance, setMonoUserInstance] = useState(null);
+
+  useEffect(() => {
+    api("/v1/auth/registration-info")
+      .then((data) => setMonoUserInstance(data.allow_register === false))
+      .catch(() => setMonoUserInstance(true));
+  }, []);
 
   async function submit(e) {
     e.preventDefault();
@@ -102,9 +109,11 @@ export default function Register() {
           <Link href="/forgot" style={{ marginLeft: "1rem" }}>¿Olvidaste tu contraseña?</Link>
         </div>
 
-        <div style={{ marginTop: "1rem", fontSize: "0.78rem", color: "var(--text-muted)", lineHeight: 1.4 }}>
-          🔒 <strong>Instancia mono-usuario:</strong> Por diseño de seguridad, el registro solo permite crear el primer usuario administrador inicial (salvo si <code>ASKBOX_ALLOW_REGISTER=true</code>).
-        </div>
+        {monoUserInstance === true && (
+          <div style={{ marginTop: "1rem", fontSize: "0.78rem", color: "var(--text-muted)", lineHeight: 1.4 }}>
+            🔒 <strong>Instancia mono-usuario:</strong> Por diseño de seguridad, el registro solo permite crear el primer usuario administrador inicial.
+          </div>
+        )}
       </form>
     </div>
   );

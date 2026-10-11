@@ -4,12 +4,9 @@ export const THEME_STORAGE_KEY = "askbox-theme";
 
 const COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 400; // ~400 días
 
-export function getSystemTheme() {
-  if (typeof window === "undefined") return "dark";
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-}
+export const DEFAULT_THEME = "dark";
 
-/** @returns {"light" | "dark" | null} null = sin preferencia explícita (seguir sistema) */
+/** @returns {"light" | "dark" | null} null = sin preferencia explícita (usar DEFAULT_THEME) */
 export function getThemeCookie() {
   if (typeof document === "undefined") return null;
   const parts = document.cookie.split(";");
@@ -23,11 +20,11 @@ export function getThemeCookie() {
   return null;
 }
 
-/** Tema aplicado en pantalla: cookie explícita o preferencia del sistema. */
+/** Tema aplicado en pantalla: cookie explícita o oscuro por defecto. */
 export function getResolvedTheme() {
   const fromCookie = getThemeCookie();
   if (fromCookie) return fromCookie;
-  return getSystemTheme();
+  return DEFAULT_THEME;
 }
 
 /** @param {"light" | "dark"} resolved */
@@ -70,4 +67,4 @@ export function migrateLegacyThemeStorage() {
   }
 }
 
-export const THEME_INIT_SCRIPT = `(function(){try{var n='askbox-theme';var t=null;var p=document.cookie.split(';');for(var i=0;i<p.length;i++){var s=p[i].trim();if(s.indexOf(n+'=')===0){var v=decodeURIComponent(s.slice(n.length+1));if(v==='light'||v==='dark')t=v;break;}}if(!t){t=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}document.documentElement.setAttribute('data-theme',t);}catch(e){document.documentElement.setAttribute('data-theme','dark');}})();`;
+export const THEME_INIT_SCRIPT = `(function(){try{var n='askbox-theme';var t=null;var p=document.cookie.split(';');for(var i=0;i<p.length;i++){var s=p[i].trim();if(s.indexOf(n+'=')===0){var v=decodeURIComponent(s.slice(n.length+1));if(v==='light'||v==='dark')t=v;break;}}if(!t){t='dark';}document.documentElement.setAttribute('data-theme',t);}catch(e){document.documentElement.setAttribute('data-theme','dark');}})();`;

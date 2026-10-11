@@ -391,6 +391,24 @@ button:not(.btn-secondary):not(.btn-danger):not(.btn-ghost):not(.tab-btn):hover:
   border-color: var(--petrol-600);
 }
 
+/* Enlaces con aspecto de botón: anular color de enlaces globales (p. ej. modo claro) */
+a.btn-primary,
+a.btn.btn-primary {
+  color: #ffffff;
+  text-decoration: none;
+}
+
+a.btn-primary:hover,
+a.btn.btn-primary:hover {
+  color: #ffffff;
+  text-decoration: none;
+}
+
+a.btn-primary:focus-visible,
+a.btn.btn-primary:focus-visible {
+  color: #ffffff;
+}
+
 /* Botón Secundario */
 button.btn-secondary,
 .btn-secondary {

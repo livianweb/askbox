@@ -87,6 +87,12 @@ def _set_cookie(response: Response, token: str) -> None:
     )
 
 
+@router.get("/registration-info")
+async def registration_info() -> dict:
+    """Metadatos públicos de registro (sin secretos)."""
+    return {"allow_register": settings.allow_register}
+
+
 @router.post("/register", status_code=201)
 async def register(body: Registration, request: Request, response: Response):
     await ratelimit.check(request.app.state.redis, f"auth:{client_ip(request)}", settings.login_rate_per_min)

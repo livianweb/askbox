@@ -103,7 +103,7 @@ export default function Nav() {
               </button>
             </>
           ) : (
-            <Link href="/login" className="btn-primary btn-sm">
+            <Link href="/login" className="btn btn-primary btn-sm">
               Acceder
             </Link>
           )}
