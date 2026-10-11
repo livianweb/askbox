@@ -147,8 +147,10 @@ Variables que lee la API (`api/app/config.py` → `api/app/mailer.py`): `ASKBOX_
 ## Diseño (resumen)
 
 - `api/app/llm/`: `router.py` (caché → tier → peers same-class en todos los proveedores con clave → bajada de tier), `providers/` (gemini, openrouter, `opencode_zen`), `keypool.py`, `cache.py`, `catalog.py` (`peer_chain`).
-- OpenCode Zen: `OPENCODE_ZEN_API_KEY` opcional en servidor; modelos free también sin clave de proyecto. Endpoint configurable con `ASKBOX_OPENCODE_ZEN_API_URL` (por defecto `https://opencode.ai/zen/v1/chat/completions`).
-- Modelos y cadenas en la tabla `model_catalog` (seed en `001_init.sql`); editar filas en BD, no código.
+- OpenCode Zen: clave de proyecto o `OPENCODE_ZEN_API_KEY` en servidor; endpoint `ASKBOX_OPENCODE_ZEN_API_URL` (por defecto chat completions Zen). Los modelos **free** de la consola OpenCode **no** sirven para `POST /v1/ask` (política app-only); el catálogo los lleva `enabled=false` — usar modelos de pago con créditos y `enabled=true` en `model_catalog` (ver `.cursor/skills/llm-routing/SKILL.md`).
+- Modelos y cadenas en la tabla `model_catalog` (seeds/migraciones en `api/app/migrations/`); ajustar `enabled`, `priority`, `tier` y costes en BD (o nueva migración), no en código.
+- **Revisión de modelos free:** automática **diaria 06:00 UTC** en el servicio **`worker`** (arq). Al hacer `docker compose up -d` (o `up` con worker), el cron `catalog_free_models_daily` se registra **solo** — no hace falta crontab del host ni pasos post-deploy. Desactivar: `ASKBOX_CATALOG_SYNC_CRON=false` o `0` en `.env`. Manual on-demand: `./scripts/check-free-models.sh`. Solo descubre candidatos y escribe `.askbox/catalog-sync-latest.json`; **no** activa modelos en BD.
+- Revisión manual on-demand: `./scripts/check-free-models.sh` — checklist en `.cursor/skills/llm-routing/SKILL.md`.
 - Seguridad: AES-256-GCM con AAD `proyecto:proveedor`, nonce aleatorio, `key_version`; la API nunca devuelve claves; logs sin prompts (solo longitud y hash truncado).
 - Límites: prompt ≤ 20000 chars, `max_output_tokens` ≤ 8192, rate limit Redis (`ASKBOX_ASK_RATE_PER_MIN`, 30/min por usuario, token `ab_live_` y proyecto en `/v1/ask`; login 10/min por IP).
 - Tokens de proyecto: prefijo `ab_live_`, SHA-256 en `project_access_tokens`; scopes `ask:read`, `prompts:write`, `keys:write`, `usage:read` (gestión UI con sesión; `/v1/ask` con Bearer de token).

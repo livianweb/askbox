@@ -85,6 +85,9 @@ class Settings:
         "ASKBOX_OPENCODE_ZEN_API_URL",
         "https://opencode.ai/zen/v1/chat/completions",
     )
+    # Worker arq: cron diario de descubrimiento free (solo informe; nunca auto-enable).
+    catalog_sync_cron: bool = _bool("ASKBOX_CATALOG_SYNC_CRON", True)
+    catalog_sync_probe_limit: int = _int("ASKBOX_CATALOG_SYNC_PROBE_LIMIT", 3)
 
     # Pantalla de configuración Git (ver app/gitops.py). Ruta del repo accesible desde este
     # proceso; vacío/no accesible => la pantalla lo informa en vez de fallar o simular datos.

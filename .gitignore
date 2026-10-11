@@ -24,6 +24,7 @@ build/
 *.bak-*
 
 # .askbox/git-settings.json y deploy-settings.json NO se ignoran: config no secreta (ver gitops/deployops).
+.askbox/catalog-sync-latest.json
 
 # Entornos/artefactos locales adicionales
 .env.local
