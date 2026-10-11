@@ -12,7 +12,6 @@ log = logging.getLogger(__name__)
 _SYSTEM_KEYS = {
     "gemini": lambda: settings.system_gemini_key,
     "openrouter": lambda: settings.system_openrouter_key,
-    "opencode_zen": lambda: settings.system_opencode_zen_key,
 }
 
 
@@ -20,8 +19,8 @@ _SYSTEM_KEYS = {
 class KeyHandle:
     provider: str
     secret: str  # solo en memoria; nunca se loguea ni se serializa
-    key_id: str | None  # None = clave de sistema / anónima Zen
-    source: str  # 'project' | 'system' | 'zen_anonymous'
+    key_id: str | None  # None = clave de sistema
+    source: str  # 'project' | 'system'
 
     def __repr__(self) -> str:  # evita fugas accidentales en logs
         return f"KeyHandle(provider={self.provider!r}, key_id={self.key_id!r}, source={self.source!r})"
@@ -52,12 +51,6 @@ async def candidates(pool, project: dict, provider: str) -> list[KeyHandle]:
     sk = _system_key(provider)
     if project["allow_system_keys"] and sk:
         out.append(KeyHandle(provider, sk, None, "system"))
-    # OpenCode Zen: modelos free aceptan peticiones sin Bearer; permite peers sin clave de proyecto.
-    if not out and provider == "opencode_zen":
-        if sk:
-            out.append(KeyHandle(provider, sk, None, "system"))
-        else:
-            out.append(KeyHandle(provider, "", None, "zen_anonymous"))
     return out
 
 

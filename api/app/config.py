@@ -44,7 +44,6 @@ class Settings:
     # Claves de sistema (opcionales, solo servidor; nunca salen por la API).
     system_gemini_key: str = os.getenv("GEMINI_API_KEY", "")
     system_openrouter_key: str = os.getenv("OPENROUTER_API_KEY", "")
-    system_opencode_zen_key: str = os.getenv("OPENCODE_ZEN_API_KEY", "")
 
     # Auth
     cookie_name: str = "askbox_session"
@@ -81,13 +80,6 @@ class Settings:
     max_models_per_provider: int = _int("ASKBOX_MAX_MODELS_PER_PROVIDER", 3)
     openrouter_referer: str = os.getenv("ASKBOX_OPENROUTER_REFERER", "https://askbox.local")
     openrouter_title: str = os.getenv("ASKBOX_OPENROUTER_TITLE", "askbox")
-    opencode_zen_api_url: str = os.getenv(
-        "ASKBOX_OPENCODE_ZEN_API_URL",
-        "https://opencode.ai/zen/v1/chat/completions",
-    )
-    # Worker arq: cron diario de descubrimiento free (solo informe; nunca auto-enable).
-    catalog_sync_cron: bool = _bool("ASKBOX_CATALOG_SYNC_CRON", True)
-    catalog_sync_probe_limit: int = _int("ASKBOX_CATALOG_SYNC_PROBE_LIMIT", 3)
 
     # Pantalla de configuración Git (ver app/gitops.py). Ruta del repo accesible desde este
     # proceso; vacío/no accesible => la pantalla lo informa en vez de fallar o simular datos.

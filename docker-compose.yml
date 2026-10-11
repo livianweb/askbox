@@ -9,7 +9,6 @@ services:
       ASKBOX_MASTER_KEY: ${ASKBOX_MASTER_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      OPENCODE_ZEN_API_KEY: ${OPENCODE_ZEN_API_KEY:-}
       ASKBOX_COOKIE_SECURE: ${ASKBOX_COOKIE_SECURE:-false}
       ASKBOX_ALLOW_REGISTER: ${ASKBOX_ALLOW_REGISTER:-false}
       ASKBOX_ASK_RATE_PER_MIN: ${ASKBOX_ASK_RATE_PER_MIN:-30}
@@ -66,7 +65,6 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  # arq: al arrancar registra cron diario catalog_free_models_daily (06:00 UTC) si ASKBOX_CATALOG_SYNC_CRON≠0.
   worker:
     build: ./api
     command: ["arq", "app.worker.WorkerSettings"]
@@ -76,10 +74,7 @@ services:
       ASKBOX_MASTER_KEY: ${ASKBOX_MASTER_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      OPENCODE_ZEN_API_KEY: ${OPENCODE_ZEN_API_KEY:-}
       ASKBOX_REPO_PATH: /repo
-      ASKBOX_CATALOG_SYNC_CRON: ${ASKBOX_CATALOG_SYNC_CRON:-true}
-      ASKBOX_CATALOG_SYNC_PROBE_LIMIT: ${ASKBOX_CATALOG_SYNC_PROBE_LIMIT:-3}
     user: "${ASKBOX_UID:-1000}:${ASKBOX_GID:-1000}"
     volumes:
       - ./.askbox:/repo/.askbox:rw

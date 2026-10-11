@@ -14,17 +14,16 @@ from typing import Any
 from app.config import settings
 from app.llm import cache, catalog, keypool
 from app.llm.errors import LLMError
-from app.llm.providers import gemini, openrouter, opencode_zen
+from app.llm.providers import gemini, openrouter
 from app.llm.schema_check import response_matches_schema
 
 log = logging.getLogger(__name__)
 
 # Orden de desempate entre proveedores (no implica «fallar primero en X»).
-PROVIDER_ORDER = ("gemini", "openrouter", "opencode_zen")
+PROVIDER_ORDER = ("gemini", "openrouter")
 _PROVIDERS = {
     "gemini": gemini.complete,
     "openrouter": openrouter.complete,
-    "opencode_zen": opencode_zen.complete,
 }
 _CODE_HINT = re.compile(r"```|\bdef \w+\(|\bclass \w+|function\s+\w+\(|=>|#include|SELECT\s.+\sFROM", re.I | re.S)
 TIER_LADDER = ("fast", "balanced", "strong")
@@ -113,7 +112,7 @@ async def _cascade_peers(
     if not provider_keys:
         raise AskFailure(
             "No hay clave de proveedor utilizable (proyecto o sistema). "
-            "Añade una clave Gemini, OpenRouter u OpenCode Zen al proyecto.",
+            "Añade una clave Gemini u OpenRouter al proyecto.",
             tier_used=effective_tier,
             attempts=0,
             kind="fatal",

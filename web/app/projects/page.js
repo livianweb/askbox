@@ -102,7 +102,6 @@ function Keys({ project }) {
             <select id={`prov-${project.id}`} value={provider} onChange={(e) => setProvider(e.target.value)}>
               <option value="gemini">Google Gemini</option>
               <option value="openrouter">OpenRouter</option>
-              <option value="opencode_zen">OpenCode Zen</option>
             </select>
           </div>
           <div>

@@ -4,10 +4,6 @@
                       imprime por stdout un enlace de reset de 24 h para que elija la suya.
   reset-link EMAIL    emite un enlace de reset de 24 h para un usuario existente.
   git-setup EMAIL [--repo NAME]  crea/conecta remoto GitHub y push; sin --repo hace askbox + kit.
-  catalog-sync-check [--json] [--no-probe] [--probe-limit N]
-                      compara modelos free (Zen /models, OpenRouter :free) con model_catalog;
-                      sondeo mínimo si hay claves de sistema (sin loguear secretos).
-                      No existe --apply: activar modelos sigue siendo migración SQL o UPDATE manual.
 
 El enlace de reset es un secreto: redirigir stdout a un archivo con permisos 600, no pegarlo en chats/logs.
 git-setup imprime solo URLs y estado (nunca tokens).
@@ -19,7 +15,6 @@ import json
 import secrets
 import sys
 
-from app.catalog_sync_check import format_report_text, run_sync_check, save_report
 from app.config import settings
 from app.db import create_pool, run_migrations
 from app.routers.auth import _EMAIL, issue_reset_token
@@ -101,51 +96,6 @@ async def _git_setup(email: str, repo_filter: str | None = None) -> int:
         await pool.close()
 
 
-def _parse_catalog_sync_argv(argv: list[str]) -> tuple[bool, bool, int]:
-    as_json = False
-    probe = True
-    probe_limit = 5
-    i = 0
-    while i < len(argv):
-        if argv[i] == "--json":
-            as_json = True
-            i += 1
-        elif argv[i] == "--no-probe":
-            probe = False
-            i += 1
-        elif argv[i] == "--probe-limit" and i + 1 < len(argv):
-            probe_limit = max(1, int(argv[i + 1]))
-            i += 2
-        else:
-            raise ValueError(f"argumento desconocido: {argv[i]}")
-    return as_json, probe, probe_limit
-
-
-async def _catalog_sync_check(argv: list[str]) -> int:
-    try:
-        as_json, probe, probe_limit = _parse_catalog_sync_argv(argv)
-    except ValueError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
-    pool = await create_pool()
-    try:
-        await run_migrations(pool)
-        report = await run_sync_check(pool, probe=probe, probe_limit=probe_limit)
-        saved = save_report(report)
-        if as_json:
-            out = report.to_dict()
-            if saved:
-                out["report_path"] = str(saved)
-            print(json.dumps(out, indent=2, ensure_ascii=False))
-        else:
-            print(format_report_text(report))
-            if saved:
-                print(f"\nInforme guardado: {saved}")
-        return 1 if report.not_in_catalog else 0
-    finally:
-        await pool.close()
-
-
 async def _main(cmd: str, email: str) -> int:
     email = email.strip().lower()
     if not _EMAIL.match(email):
@@ -172,8 +122,6 @@ async def _main(cmd: str, email: str) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 2 and sys.argv[1] == "catalog-sync-check":
-        sys.exit(asyncio.run(_catalog_sync_check(sys.argv[2:])))
     if len(sys.argv) < 3 or sys.argv[1] not in {"ensure-user", "reset-link", "git-setup"}:
         print(__doc__, file=sys.stderr)
         sys.exit(2)

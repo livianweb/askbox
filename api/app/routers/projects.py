@@ -21,7 +21,7 @@ class ProjectIn(BaseModel):
 
 
 class KeyIn(BaseModel):
-    provider: str = Field(pattern="^(gemini|openrouter|opencode_zen)$")
+    provider: str = Field(pattern="^(gemini|openrouter)$")
     label: str = Field(default="", max_length=80)
     key: str = Field(min_length=8, max_length=512)
 

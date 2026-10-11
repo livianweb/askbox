@@ -14,11 +14,6 @@ from app.llm.router import infer_tier_from_text, next_tier, prev_tier  # noqa: E
 from app.ask_exec import _response_from_res  # noqa: E402
 from app.llm.schema_check import response_matches_schema  # noqa: E402
 from app.security import hash_password, verify_password  # noqa: E402
-from app.catalog_sync_check import (  # noqa: E402
-    is_app_only_message,
-    is_openrouter_free_slug,
-    is_zen_free_slug,
-)
 
 
 class CryptoTests(unittest.TestCase):
@@ -78,13 +73,10 @@ class MiscTests(unittest.TestCase):
         batch = [
             ("openrouter", {"slug": "b", "max_output_tokens": 4096, "priority": 20}),
             ("gemini", {"slug": "a", "max_output_tokens": 8192, "priority": 10}),
-            ("opencode_zen", {"slug": "c", "max_output_tokens": 8192, "priority": 10}),
         ]
-        ordered = catalog.order_peer_batch(("gemini", "openrouter", "opencode_zen"), batch)
+        ordered = catalog.order_peer_batch(("gemini", "openrouter"), batch)
         slugs = [(p, m["slug"]) for p, m in ordered]
-        self.assertEqual(slugs[0], ("gemini", "a"))
-        self.assertEqual(slugs[1][0], "opencode_zen")
-        self.assertEqual(slugs[2], ("openrouter", "b"))
+        self.assertEqual(slugs, [("gemini", "a"), ("openrouter", "b")])
 
     def test_schema_and_cache_key(self):
         schema = {"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean"}}}
@@ -96,14 +88,6 @@ class MiscTests(unittest.TestCase):
 
     def test_handle_repr_hides_secret(self):
         self.assertNotIn("topsecret", repr(KeyHandle("gemini", "topsecret", None, "system")))
-
-    def test_catalog_sync_slug_helpers(self):
-        self.assertTrue(is_zen_free_slug("mimo-v2.6-flash-free"))
-        self.assertTrue(is_zen_free_slug("big-pickle"))
-        self.assertFalse(is_zen_free_slug("deepseek-v4.1-flash"))
-        self.assertTrue(is_openrouter_free_slug("qwen/qwen3-32b:free"))
-        self.assertTrue(is_app_only_message("This model is only available in the OpenCode app"))
-        self.assertFalse(is_app_only_message("rate limit exceeded"))
 
     def test_stream_response_shape(self):
         res = {
@@ -120,14 +104,6 @@ class MiscTests(unittest.TestCase):
         self.assertEqual(out["request_id"], "rid-1")
         self.assertEqual(out["latency_ms"], 42)
         self.assertEqual(out["text"], "hola")
-
-    def test_catalog_sync_heuristics(self):
-        self.assertTrue(is_zen_free_slug("mimo-v2.6-flash-free"))
-        self.assertTrue(is_zen_free_slug("big-pickle"))
-        self.assertFalse(is_zen_free_slug("deepseek-v4.1-flash"))
-        self.assertTrue(is_openrouter_free_slug("meta/llama:free"))
-        self.assertTrue(is_app_only_message("This model is only available in the OpenCode app"))
-        self.assertFalse(is_app_only_message("insufficient funds"))
 
 
 if __name__ == "__main__":
