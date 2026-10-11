@@ -11,6 +11,15 @@ def _default_repo_path() -> str:
     return str(Path(__file__).resolve().parents[2])
 
 
+def _parse_repo_map(raw: str) -> dict:
+    out: dict = {}
+    for item in (raw or "").split(","):
+        name, sep, path = item.strip().partition("=")
+        if sep and name.strip() and path.strip():
+            out[name.strip()] = path.strip()
+    return out
+
+
 def _int(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, "") or default)
@@ -72,6 +81,9 @@ class Settings:
     # Pantalla de configuración Git (ver app/gitops.py). Ruta del repo accesible desde este
     # proceso; vacío/no accesible => la pantalla lo informa en vez de fallar o simular datos.
     repo_path: str = os.getenv("ASKBOX_REPO_PATH", "") or _default_repo_path()
+    # Repos adicionales gestionables desde /settings/git (p. ej. el kit de orquestación):
+    # "nombre=/ruta,otro=/ruta2". Solo repos montados explícitamente (ver docker-compose.yml).
+    extra_repos: dict = _parse_repo_map(os.getenv("ASKBOX_EXTRA_REPOS", ""))
 
 
 settings = Settings()

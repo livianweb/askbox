@@ -25,9 +25,13 @@ services:
       # Pantalla /settings/git (app/gitops.py): repo montado en /repo (ver volumes).
       ASKBOX_REPO_PATH: /repo
       GIT_OPTIONAL_LOCKS: "0"          # git status no reescribe .git/index
-      GIT_CONFIG_COUNT: "1"            # el repo es del uid del host, no del usuario del contenedor
+      GIT_CONFIG_COUNT: "2"            # los repos son del uid del host, no del usuario del contenedor
       GIT_CONFIG_KEY_0: safe.directory
       GIT_CONFIG_VALUE_0: /repo
+      GIT_CONFIG_KEY_1: safe.directory
+      GIT_CONFIG_VALUE_1: /repos/cursor-agent-orchestrator
+      # Repos adicionales gestionables desde /settings/git (?repo=<nombre>), "nombre=ruta,...".
+      ASKBOX_EXTRA_REPOS: ${ASKBOX_EXTRA_REPOS:-cursor-agent-orchestrator=/repos/cursor-agent-orchestrator}
     # Mismo uid/gid que el dueño del repo en el host: los ficheros que escriba git
     # (.git/config) y .askbox/ no quedan como root. Ajusta en .env si tu uid no es 1000.
     user: "${ASKBOX_UID:-1000}:${ASKBOX_GID:-1000}"
@@ -39,6 +43,11 @@ services:
       - ./.askbox:/repo/.askbox:rw
       # ...y el .env real NUNCA es legible dentro del contenedor (secretos van por environment).
       - /dev/null:/repo/.env:ro
+      # Kit de orquestación (hermano en el host): árbol ro + .git rw, para crear su remoto/push
+      # con el GitHub token guardado. Si no existe en tu host, quita estas dos líneas y
+      # ASKBOX_EXTRA_REPOS (si no, Docker crearía el directorio vacío como root).
+      - ${ASKBOX_KIT_PATH:-../cursor-agent-orchestrator}:/repos/cursor-agent-orchestrator:ro
+      - ${ASKBOX_KIT_PATH:-../cursor-agent-orchestrator}/.git:/repos/cursor-agent-orchestrator/.git:rw
     depends_on:
       db:
         condition: service_healthy

@@ -35,7 +35,13 @@ curl -s http://localhost:8066/ready    # db, redis y master_key
 | GET | `/v1/requests` | Trazas recientes (sin prompts) |
 | GET | `/v1/settings/git/status` | Estado del repo del proyecto: branch, remotos (URL sin credenciales), último commit, preferencias |
 | PATCH | `/v1/settings/git/preferences` | `{auto_commit?, remote_name?, default_visibility?}` — guardadas en `.askbox/git-settings.json` (no secreto, versionable) |
-| POST | `/v1/settings/git/remote` | Conectar remoto existente (`{name, url}`) o crear uno con `gh` (`{name, create:true, slug?, visibility, push?}`) |
+| POST | `/v1/settings/git/remote` | Conectar remoto existente (`{name, url}`) o crear uno (`{name, create:true, slug?, visibility?, description?, push?}`): con `gh` si está autenticado en el host; si no, con el GitHub token guardado (REST; `slug` obligatorio) |
+| GET | `/v1/settings/git/github-token` | `{github_token_configured, github_token_last4?}`; **nunca** el token |
+| PUT/POST | `/v1/settings/git/github-token` | `{token}` → se cifra (AES-256-GCM, `ASKBOX_MASTER_KEY`) en `git_credentials`; reemplaza el anterior |
+| DELETE | `/v1/settings/git/github-token` | Borra el token |
+| POST | `/v1/settings/git/push` | `{remote?, branch?}` → `git push -u` de la rama actual (usa el token si el remoto es `https://github.com/...`) |
+
+`status`, `remote` y `push` aceptan `?repo=<nombre>`: `askbox` (por defecto) o un repo montado en `ASKBOX_EXTRA_REPOS` (por defecto `cursor-agent-orchestrator`).
 
 **Pantalla `/settings/git` en Docker:** `docker-compose.yml` monta el repo en el contenedor `api` como `/repo` (`ASKBOX_REPO_PATH=/repo`): árbol en solo lectura, `.git` y `.askbox/` en lectura/escritura, y `.env` enmascarado con `/dev/null` (los secretos no son legibles desde el contenedor). La API corre con `ASKBOX_UID`/`ASKBOX_GID` (por defecto 1000:1000, el dueño del repo) para no dejar ficheros root en `.git`. El `worker` no usa gitops y no monta nada. Sin `gh auth login` en el host/contenedor no se puede crear remoto con `gh`; conectar uno existente (`POST /v1/settings/git/remote`) sí funciona.
 
@@ -84,16 +90,23 @@ MVP de pantalla de administración para el propio repo de askbox (ver `api/app/g
 
 - Lee `git branch`, `git remote -v` (URL siempre saneada, sin credenciales embebidas), último
   commit y si hay cambios sin commitear.
-- Permite conectar un remoto existente o crear uno nuevo con `gh repo create` (requiere
-  `gh auth login` ya hecho en el host/contenedor).
+- Permite conectar un remoto existente o crear uno nuevo (público/privado según
+  `default_visibility`): con `gh` si está autenticado, o con el **GitHub token** guardado.
+- **GitHub token (PAT):** se pega en el campo password de `/settings/git`, se cifra con AES-256-GCM
+  (`ASKBOX_MASTER_KEY`, AAD ligado al usuario) en la tabla `git_credentials` y no vuelve a salir
+  de la API (solo `github_token_configured` y `last4`). Para crear repo + push necesita permiso
+  de crear repos (clásico: `repo`; fine-grained: *Administration* y *Contents* en write). Al
+  usarlo, solo vive en memoria: la API lo pasa a `git` por variables de entorno del subproceso
+  (cabecera acotada a `https://github.com/`, sin tocar `.git/config` ni argv) y los errores se
+  redactan. El remoto se guarda con URL limpia, sin credenciales. Si se pierde la master key,
+  hay que volver a pegar el token.
+- Repos adicionales: `docker-compose.yml` monta el kit hermano `../cursor-agent-orchestrator`
+  (`ASKBOX_KIT_PATH` para otra ruta) y lo declara en `ASKBOX_EXTRA_REPOS`; la pantalla muestra un
+  selector de repositorio.
 - Preferencias (`auto_commit`, `remote_name`, `default_visibility`) se guardan en
   `.askbox/git-settings.json` dentro del propio repo (no secreto, versionable).
-- `ASKBOX_REPO_PATH` (opcional): ruta del repo accesible desde el proceso de la API. Por
-  defecto, calcula la raíz del repo asumiendo ejecución fuera de Docker. **El `docker-compose.yml`
-  actual no monta el repo dentro del contenedor `api`**, así que en un despliegue Docker normal
-  este endpoint responderá `available: false` con el motivo explícito; para habilitarlo del
-  todo, monta el repo como volumen en el servicio `api` (p. ej. `- .:/workspace/repo:rw`) y
-  define `ASKBOX_REPO_PATH=/workspace/repo` — cambio de infraestructura fuera del alcance de
-  este MVP (ver ownership de `docker-compose.yml`).
+- `ASKBOX_REPO_PATH` (opcional): ruta del repo accesible desde el proceso de la API. En Docker
+  es `/repo` (montado por `docker-compose.yml`, ver abajo); fuera de Docker se calcula la raíz
+  del repo. Si no hay `.git` accesible, la pantalla responde `available: false` con el motivo.
 - Política de auto-commit/push del propio código de askbox: ver
   `.cursor/skills/git-autopilot/SKILL.md`.

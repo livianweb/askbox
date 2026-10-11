@@ -22,20 +22,62 @@ export default function GitSettings() {
   const [createVisibility, setCreateVisibility] = useState("private");
   const [pushNow, setPushNow] = useState(false);
 
+  // GitHub token (solo se escribe; el servidor nunca lo devuelve)
+  const [repo, setRepo] = useState("");
+  const [tokenInput, setTokenInput] = useState("");
+
   const load = useCallback(() => {
-    api("/v1/settings/git/status")
+    api(`/v1/settings/git/status${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`)
       .then((s) => {
         setStatus(s);
         if (s.preferences) {
           setAutoCommit(!!s.preferences.auto_commit);
           setRemoteName(s.preferences.remote_name || "origin");
           setVisibility(s.preferences.default_visibility || "private");
+          setCreateVisibility(s.preferences.default_visibility || "private");
         }
       })
       .catch((e) => (e.status === 401 ? router.replace("/login") : setError(e.message)));
-  }, [router]);
+  }, [router, repo]);
 
   useEffect(() => { load(); }, [load]);
+
+  const q = repo ? `?repo=${encodeURIComponent(repo)}` : "";
+
+  async function saveToken(e) {
+    e.preventDefault();
+    setError(""); setMsg("");
+    try {
+      await api("/v1/settings/git/github-token", { method: "PUT", body: { token: tokenInput } });
+      setTokenInput(""); // no conservar el PAT en el estado del navegador
+      setMsg("GitHub token guardado (cifrado en el servidor).");
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function deleteToken() {
+    setError(""); setMsg("");
+    try {
+      await api("/v1/settings/git/github-token", { method: "DELETE" });
+      setMsg("GitHub token borrado.");
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function pushRemote() {
+    setError(""); setMsg("");
+    try {
+      await api(`/v1/settings/git/push${q}`, { method: "POST", body: {} });
+      setMsg("Push realizado.");
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
 
   async function savePreferences(e) {
     e.preventDefault();
@@ -56,7 +98,7 @@ export default function GitSettings() {
     e.preventDefault();
     setError(""); setMsg("");
     try {
-      await api("/v1/settings/git/remote", { method: "POST", body: { name: remoteName, url: remoteUrl } });
+      await api("/v1/settings/git/remote" + q, { method: "POST", body: { name: remoteName, url: remoteUrl } });
       setRemoteUrl(""); // no conservar en el formulario (puede llevar credenciales embebidas)
       setMsg("Remoto conectado.");
       load();
@@ -69,11 +111,11 @@ export default function GitSettings() {
     e.preventDefault();
     setError(""); setMsg("");
     try {
-      await api("/v1/settings/git/remote", {
+      const res = await api("/v1/settings/git/remote" + q, {
         method: "POST",
         body: { name: remoteName, create: true, slug: slug || undefined, visibility: createVisibility, push: pushNow },
       });
-      setMsg("Repo remoto creado con gh.");
+      setMsg(res?.created_repo?.html_url ? `Repo creado: ${res.created_repo.html_url}` : "Repo remoto creado.");
       load();
     } catch (err) {
       setError(err.message);
@@ -94,8 +136,53 @@ export default function GitSettings() {
       <h2>Configuración Git</h2>
       <p className="muted">
         Estado del repositorio del proyecto, conexión de remoto y preferencias de auto-commit.
-        Las credenciales (tokens, SSH) nunca se guardan aquí: solo metadatos no secretos.
+        Las preferencias son metadatos no secretos. El GitHub token se guarda cifrado (AES-GCM) en la
+        base de datos del servidor, nunca en el repo, y no se vuelve a mostrar.
       </p>
+
+      {status.repos?.length > 1 && (
+        <div className="card">
+          <label>
+            Repositorio
+            <select value={repo || status.repo || ""} onChange={(e) => setRepo(e.target.value)}>
+              {status.repos.map((r) => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </label>
+        </div>
+      )}
+
+      <div className="card">
+        <h4>GitHub token</h4>
+        <p>
+          Estado:{" "}
+          {status.github_token_configured ? (
+            <span className="ok">configurado{status.github_token_last4 ? ` (…${status.github_token_last4})` : ""}</span>
+          ) : (
+            <span className="muted">sin configurar</span>
+          )}
+          {status.gh_authenticated ? <> · <small className="muted">gh autenticado en el host</small></> : null}
+        </p>
+        <form onSubmit={saveToken}>
+          <label>
+            Personal Access Token (permiso de crear repos y escribir contenido)
+            <input
+              type="password"
+              placeholder="Pega aquí tu token de GitHub"
+              value={tokenInput}
+              onChange={(e) => setTokenInput(e.target.value)}
+              autoComplete="new-password"
+              required
+            />
+          </label>
+          <small className="muted">Se cifra al guardar y no vuelve a salir del servidor. Guardar de nuevo lo reemplaza.</small>
+          <div className="row">
+            <button>{status.github_token_configured ? "Reemplazar token" : "Guardar token"}</button>
+            {status.github_token_configured && (
+              <button type="button" onClick={deleteToken}>Borrar token</button>
+            )}
+          </div>
+        </form>
+      </div>
 
       {!status.available && (
         <div className="card">
@@ -125,6 +212,7 @@ export default function GitSettings() {
           {status.preferences?.last_push_at && (
             <p><small className="muted">Último push registrado: {status.preferences.last_push_at}</small></p>
           )}
+          <p><button type="button" onClick={pushRemote} disabled={!status.remotes?.length}>Push de la rama actual</button></p>
           <h4>Remotos</h4>
           {status.remotes?.length ? (
             <ul>
@@ -161,8 +249,10 @@ export default function GitSettings() {
 
       {status.available && (
         <div className="card">
-          <h4>Crear repo remoto con gh</h4>
-          <p className="muted">Requiere <code>gh auth login</code> ya hecho en el host/contenedor.</p>
+          <h4>Crear repo remoto en GitHub</h4>
+          <p className="muted">
+            Usa <code>gh</code> si está autenticado en el host; si no, el GitHub token guardado arriba (el nombre es obligatorio con token).
+          </p>
           <form onSubmit={createRemote}>
             <div className="row">
               <input placeholder="nombre-repo (opcional)" value={slug} onChange={(e) => setSlug(e.target.value)} maxLength={100} />
@@ -172,7 +262,7 @@ export default function GitSettings() {
               </select>
             </div>
             <label><input type="checkbox" style={{ width: "auto" }} checked={pushNow} onChange={(e) => setPushNow(e.target.checked)} /> Pushear ahora</label>
-            <button>Crear con gh</button>
+            <button>Crear repo</button>
           </form>
         </div>
       )}

@@ -103,3 +103,61 @@ class RepoAvailabilityTests(unittest.TestCase):
                 ["git", "-C", tmp, "remote", "-v"], capture_output=True, text=True, check=True,
             ).stdout)
             self.assertTrue(any(r["url"] == "https://example.com/b.git" for r in remotes))
+
+
+class TokenSafetyTests(unittest.TestCase):
+    TOKEN = "ghp_" + "A1b2C3d4" * 5
+
+    def test_redact_removes_token_and_basic_header(self):
+        import base64
+        basic = base64.b64encode(f"x-access-token:{self.TOKEN}".encode()).decode()
+        text = f"fatal: auth failed {self.TOKEN} header AUTHORIZATION: basic {basic} https://u:p@github.com/x"
+        out = gitops.redact(text, self.TOKEN)
+        self.assertNotIn(self.TOKEN, out)
+        self.assertNotIn(basic, out)
+        self.assertNotIn("u:p@", out)
+
+    def test_git_env_keeps_existing_config_and_scopes_header_to_github(self):
+        old = {k: os.environ.get(k) for k in ("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0")}
+        os.environ.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": "/repo"})
+        try:
+            env = gitops._git_env(self.TOKEN)
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "3")
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "safe.directory")
+        self.assertEqual(env["GIT_CONFIG_KEY_1"], "http.https://github.com/.extraheader")
+        self.assertNotIn(self.TOKEN, " ".join(env.values()))  # solo viaja en base64 dentro de la cabecera
+
+    def test_git_env_without_token_untouched(self):
+        env = gitops._git_env(None)
+        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+        self.assertFalse(any("extraheader" in v for v in env.values()))
+
+    def test_push_requires_commits_and_remote(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-q", tmp], check=True)
+            ok, error = gitops.push_branch(tmp, "origin", "main", self.TOKEN)
+            self.assertFalse(ok)
+            self.assertNotIn(self.TOKEN, error or "")
+
+
+class CredsFormatTests(unittest.TestCase):
+    def test_valid_token_format(self):
+        from app import gitcreds
+        self.assertTrue(gitcreds.valid_token_format("ghp_" + "a" * 36))
+        self.assertFalse(gitcreds.valid_token_format("short"))
+        self.assertFalse(gitcreds.valid_token_format("ghp_" + "a" * 20 + " " + "b" * 10))
+        self.assertFalse(gitcreds.valid_token_format("ghp_" + "á" * 30))
+
+    def test_encrypt_roundtrip_scoped_to_user(self):
+        from app import crypto
+        ct, nonce, ver = crypto.encrypt_secret("ghp_" + "x" * 36, "user:u1", "github")
+        self.assertNotIn(b"ghp_", ct)
+        self.assertEqual(crypto.decrypt_secret(ct, nonce, ver, "user:u1", "github"), "ghp_" + "x" * 36)
+        with self.assertRaises(crypto.CryptoError):
+            crypto.decrypt_secret(ct, nonce, ver, "user:u2", "github")

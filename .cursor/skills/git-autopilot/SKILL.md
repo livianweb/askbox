@@ -58,11 +58,30 @@ más de contexto, prefiere cerrar con un commit coherente antes que dejarlo sin 
 3. Mensaje de commit: explica el **por qué**, no solo el qué (resumen en una línea + cuerpo si
    aporta contexto). Nunca incluir valores de secretos en el mensaje.
 4. `git push` si hay remoto con tracking configurado.
-5. Si no hay remoto: comprobar `gh auth status`. Si está autenticado, crear el repo con
-   `gh repo create` (visibilidad según la preferencia del proyecto; por defecto `private` salvo
-   que el usuario pida `public`) y pushear. Si `gh` no está disponible o no está autenticado,
-   dejar el repo local con el commit hecho y documentar en el informe final los comandos
-   exactos para que el usuario publique manualmente.
+5. Si no hay remoto, intentar en este orden (el primero disponible):
+   1. **`gh` del host**: `gh auth status` OK → `gh repo create` (visibilidad según la preferencia
+      del proyecto; por defecto `private` salvo que el usuario pida `public`) y push.
+   2. **UI/API de settings git del proyecto con GitHub token guardado** (si la app lo ofrece,
+      p. ej. askbox): `GET /v1/settings/git/status` → `github_token_configured: true` →
+      `POST /v1/settings/git/remote` con `{"name":"origin","create":true,"slug":"<repo>",
+      "visibility":"private","push":true}` (y `?repo=<nombre>` para repos hermanos montados,
+      p. ej. el propio kit). Auth: cookie de sesión o `Authorization: Bearer <token de API>`
+      (en askbox, `POST /v1/auth/token`). Para pushes posteriores: `POST /v1/settings/git/push`.
+      El agente **no necesita ni debe conocer el PAT**: la API lo descifra en memoria.
+   3. Si no hay ninguna credencial: dejar el repo local con el commit hecho y documentar en el
+      informe final los comandos exactos / la acción (p. ej. «pega un GitHub token en
+      `/settings/git`») para que el usuario publique.
+
+## Credenciales de GitHub: dónde viven
+
+- Opciones válidas: `gh auth` del host, o un **GitHub token guardado cifrado por la app** vía su
+  pantalla de settings git (campo password → API → cifrado con la master key de la app, p. ej.
+  AES-GCM; nunca en claro en BD, `.git/config`, logs ni respuestas; la API solo expone
+  `github_token_configured` y `last4`).
+- Al pushear con token: pasarlo solo por entorno del subproceso (`GIT_CONFIG_*` con
+  `http.https://github.com/.extraheader`, o `GH_TOKEN`), nunca en argv ni en la URL del remoto.
+- Pedir al usuario un PAT por chat **no** es el camino: indícale que lo pegue en la pantalla de
+  settings git. Si lo pegara en el chat, no lo repitas ni lo escribas en ficheros.
 
 ## Nunca commitear
 
@@ -83,13 +102,16 @@ nuevo (o si falta), el agente debe crear una pantalla/endpoint de administració
 - **Estado**: remoto conectado (nombre + URL **sin credenciales embebidas**), branch actual,
   último commit (hash corto, fecha, resumen), si hay cambios sin commitear.
 - **Conectar o crear remoto**: permitir indicar la URL de un remoto existente, o crear uno
-  nuevo vía `gh repo create` si `gh` está autenticado en el host/contenedor.
+  nuevo vía `gh repo create` si `gh` está autenticado, o vía la API REST de GitHub con un
+  **token guardado cifrado** (campo password + botón guardar/borrar + indicador de si hay token).
 - **Preferencias**: `auto_commit` (on/off), `remote_name`, `default_visibility`
   (`public`/`private` por defecto al crear repos nuevos).
 - **Dónde vive la config**: las preferencias (no secretas) se guardan **dentro del propio
   repo** (p. ej. `.askbox/git-settings.json` o equivalente por proyecto), para que viajen con
-  el código. Las credenciales (tokens, SSH keys) **nunca** se guardan ahí: viven en `gh auth`
-  o variables de entorno del host/contenedor, fuera del repo versionado.
+  el código. Las credenciales (tokens, SSH keys) **nunca** se guardan ahí: viven en `gh auth`,
+  en variables de entorno del host/contenedor, o **cifradas en la BD/almacén de la app**
+  (GitHub token vía API: `GET` solo `configured`+`last4`; `PUT/POST` guarda; `DELETE` borra),
+  siempre fuera del repo versionado.
 - **Degradación clara**: si el proceso que sirve esta pantalla no tiene acceso al `.git` del
   repo (p. ej. corre en un contenedor sin ese volumen montado), debe decirlo explícitamente en
   vez de fallar en silencio o simular datos. Es válido un MVP tipo *stub* que solo exponga
