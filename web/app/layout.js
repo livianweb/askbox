@@ -4,6 +4,13 @@ import Nav from "./Nav";
 export const metadata = {
   title: "askbox — Pasarela unificada LLM",
   description: "Pasarela y proxy inteligente de modelos LLM con enrutamiento por tiers, keypool cifrado y caché.",
+  icons: {
+    icon: [
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/icon-32.png", type: "image/png", sizes: "32x32" },
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
 };
 
 export const viewport = {

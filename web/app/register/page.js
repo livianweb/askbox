@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "../../lib/api";
+import BrandLogo from "../BrandLogo";
 
 export default function Register() {
   const router = useRouter();
@@ -43,6 +44,7 @@ export default function Register() {
     <div className="auth-container">
       <form className="card" onSubmit={submit}>
         <div style={{ textAlign: "center", marginBottom: "1.25rem" }}>
+          <BrandLogo size={48} className="auth-brand-logo" />
           <h2>Crear Cuenta</h2>
           <p className="muted" style={{ margin: 0 }}>
             Configura el acceso a tu pasarela askbox

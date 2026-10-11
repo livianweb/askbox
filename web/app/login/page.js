@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "../../lib/api";
+import BrandLogo from "../BrandLogo";
 
 export default function Login() {
   const router = useRouter();
@@ -30,13 +31,7 @@ export default function Login() {
     <div className="auth-container">
       <form className="card" onSubmit={submit}>
         <div style={{ textAlign: "center", marginBottom: "1.25rem" }}>
-          <div className="brand-logo-icon" style={{ margin: "0 auto 0.75rem", width: "42px", height: "42px" }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-              <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
-              <line x1="12" y1="22.08" x2="12" y2="12"></line>
-            </svg>
-          </div>
+          <BrandLogo size={48} className="auth-brand-logo" />
           <h2>Iniciar Sesión</h2>
           <p className="muted" style={{ margin: 0 }}>Accede a tu instancia unificada de askbox</p>
         </div>
