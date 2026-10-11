@@ -74,6 +74,16 @@ services:
       - api
     restart: unless-stopped
 
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: askbox-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - web
+
   db:
     image: postgres:16-alpine
     environment:
@@ -94,13 +104,6 @@ services:
     volumes:
       - redis_data:/data
     restart: unless-stopped
-
-  # cloudflared:
-  #   image: cloudflare/cloudflared:latest
-  #   command: tunnel --no-autoupdate run
-  #   environment:
-  #     TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
-  #   restart: unless-stopped
 
 volumes:
   db_data:

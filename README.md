@@ -20,6 +20,22 @@ curl -s http://localhost:8066/ready    # db, redis y master_key
 - API: http://localhost:8066 (migraciones SQL automáticas al arrancar, `api/app/migrations/`)
 - Web: http://localhost:8067 (`/login`, `/register`, `/forgot`, `/reset`, `/projects`, `/playground`, `/settings/git`; proxy `/api/*` → API)
 
+### Producción (Cloudflare Tunnel)
+
+Patrón igual que `snake-os`, `agentshop-x` o `proxmox-backups`: servicio `cloudflared` en `docker-compose.yml` con `TUNNEL_TOKEN` desde `.env` (`CLOUDFLARE_TUNNEL_TOKEN`). Ingress en Zero Trust: **askbox.softportweb.com** → `http://web:3000` (Next reescribe `/api/*` hacia la API).
+
+```bash
+# En .env (no commitear):
+# CLOUDFLARE_TUNNEL_TOKEN=...   # Zero Trust → Tunnels → askbox → Install connector
+# ASKBOX_PUBLIC_URL=https://askbox.softportweb.com
+# ASKBOX_COOKIE_SECURE=true
+
+docker compose up -d cloudflared
+curl -s https://askbox.softportweb.com/api/health
+```
+
+URL pública: **https://askbox.softportweb.com**
+
 ## Endpoints
 
 | Método | Ruta | Descripción |
