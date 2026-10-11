@@ -59,7 +59,7 @@ def is_askbox_compose(repo_path: str) -> bool:
         return False
     try:
         with open(compose, encoding="utf-8") as fh:
-            text = fh.read(4096)
+            text = fh.read()
     except OSError:
         return False
     return "api:" in text and "worker:" in text and "web:" in text
