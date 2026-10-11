@@ -20,6 +20,11 @@ DEFAULT_PREFS = {
     "tunnel_hostname": "",
     "tunnel_name": "askbox",
     "tunnel_provisioned_at": None,
+    "auto_update_enabled": True,
+    "auto_update_last_run_at": None,
+    "auto_update_last_status": None,
+    "auto_update_last_message": None,
+    "auto_update_last_dry_run": None,
 }
 _DEFAULT_PREFS = DEFAULT_PREFS
 
@@ -74,3 +79,17 @@ def effective_cookie_secure(repo_path: str, env_cookie_secure: bool, env_public_
     if url and public_url_is_https(url):
         return True
     return env_cookie_secure
+
+
+def record_auto_update_run(repo_path: str, result: dict) -> dict:
+    """Guarda el último resultado de auto-update (sin secretos)."""
+    status = "ok" if result.get("ok") else "error"
+    if result.get("skipped"):
+        status = "skipped"
+    patch = {
+        "auto_update_last_run_at": result.get("finished_at") or result.get("started_at"),
+        "auto_update_last_status": status,
+        "auto_update_last_message": (result.get("message") or "")[:500],
+        "auto_update_last_dry_run": bool(result.get("dry_run")),
+    }
+    return save_preferences(repo_path, patch)

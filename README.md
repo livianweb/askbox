@@ -79,7 +79,7 @@ En Docker, el contenedor `api` no lee `.env` del repo (está enmascarado). Para 
 | DELETE | `/v1/settings/git/github-token?repo=` | Borra el token de ese repo |
 | POST | `/v1/settings/git/push` | `{remote?, branch?}` → `git push -u` de la rama actual (usa el token si el remoto es `https://github.com/...`) |
 | GET | `/v1/settings/deploy/status` | URL efectiva, preferencias, tunnel id/hostname, `cloudflared_running`, metadatos tokens (`last4` solo) |
-| PATCH | `/v1/settings/deploy/preferences` | `{public_url?, tunnel_enabled?}` — no secretos; sugiere valores para `.env` |
+| PATCH | `/v1/settings/deploy/preferences` | `{public_url?, tunnel_enabled?, auto_update_enabled?}` — no secretos; sugiere valores para `.env` |
 | PUT/POST | `/v1/settings/deploy/cloudflare-api-token` | `{token}` API Cloudflare → cifrado (`cloudflare_api`); **nunca** devuelve el token |
 | DELETE | `/v1/settings/deploy/cloudflare-api-token` | Borra el token de API de la BD |
 | POST | `/v1/settings/deploy/tunnel/provision` | `{hostname, api_token?}` crea/actualiza túnel + DNS; guarda connector; opcionalmente `.env` + docker |
@@ -88,7 +88,18 @@ En Docker, el contenedor `api` no lee `.env` del repo (está enmascarado). Para 
 
 `status`, `remote`, `push` y `github-token` aceptan `?repo=<nombre>`: `askbox` (por defecto) o un repo montado en `ASKBOX_EXTRA_REPOS` (por defecto `cursor-agent-orchestrator`).
 
-**Pantalla `/settings/git` en Docker:** `docker-compose.yml` monta el repo en el contenedor `api` como `/repo` (`ASKBOX_REPO_PATH=/repo`): árbol en solo lectura, `.git` y `.askbox/` en lectura/escritura, y `.env` enmascarado con `/dev/null` (los secretos no son legibles desde el contenedor). La API corre con `ASKBOX_UID`/`ASKBOX_GID` (por defecto 1000:1000, el dueño del repo) para no dejar ficheros root en `.git`. El `worker` no usa gitops y no monta nada. Sin `gh auth login` en el host/contenedor no se puede crear remoto con `gh`; conectar uno existente (`POST /v1/settings/git/remote`) sí funciona.
+**Pantalla `/settings/git` en Docker:** `docker-compose.yml` monta el repo en el contenedor `api` como `/repo` (`ASKBOX_REPO_PATH=/repo`): árbol en solo lectura, `.git` y `.askbox/` en lectura/escritura, y `.env` enmascarado con `/dev/null` (los secretos no son legibles desde el contenedor). La API corre con `ASKBOX_UID`/`ASKBOX_GID` (por defecto 1000:1000, el dueño del repo) para no dejar ficheros root en `.git`. El **worker** monta el repo (sin leer `.env`) y `docker.sock` para el **auto-update diario** (ver abajo). Sin `gh auth login` en el host/contenedor no se puede crear remoto con `gh`; conectar uno existente (`POST /v1/settings/git/remote`) sí funciona.
+
+### Auto-update diario (cada instancia)
+
+Cada despliegue askbox se actualiza **solo** vía cron arq en el **worker** (no hay orquestador central):
+
+1. `git fetch` y comparar `HEAD` con `origin/<rama>` (rama actual; remoto según `.askbox/git-settings.json`).
+2. Si hay commits nuevos y el worktree está limpio: `git pull --ff-only` (si hay divergencia, **aborta** y deja log).
+3. `docker compose up -d --build` en `ASKBOX_REPO_PATH` (profile `tunnel` si `tunnel_enabled` en deploy-settings).
+4. Estado en `.askbox/deploy-settings.json` y en `/settings/deploy`.
+
+**Variables** (ver `.env.example`): `ASKBOX_AUTO_UPDATE=true` (poner `false` para desactivar), `ASKBOX_AUTO_UPDATE_HOUR=5`, `ASKBOX_AUTO_UPDATE_MINUTE=0` (UTC). Prueba: `docker compose exec worker python -m app.cli auto-update --dry-run`.
 
 Errores: `{"error": {"code", "message"}}`. `401` sin auth, `403` registro cerrado, `413/422` tamaños, `429` rate limit, `502` fallo de proveedores (`no_provider_key` o `provider_failed`; siempre con `request_id`).
 

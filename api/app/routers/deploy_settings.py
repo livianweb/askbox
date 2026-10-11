@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, field_validator
 
-from app import cfcreds, cf_tunnel, deploycreds, deployops, gitops, tunnel_apply
+from app import auto_update, cfcreds, cf_tunnel, deploycreds, deployops, gitops, tunnel_apply
 from app.cf_tunnel import CloudflareApiError
 from app.config import settings
 from app.crypto import CryptoError
@@ -18,6 +18,7 @@ router = APIRouter(prefix="/v1/settings/deploy", tags=["settings"])
 class PreferencesIn(BaseModel):
     public_url: str | None = Field(default=None, max_length=500)
     tunnel_enabled: bool | None = None
+    auto_update_enabled: bool | None = None
 
     @field_validator("public_url")
     @classmethod
@@ -91,6 +92,17 @@ async def status(request: Request, user: dict = Depends(current_user)):
         "env_hint": (
             "Con ASKBOX_HOST_ENV_FILE montado o scripts/apply-tunnel.sh en el host, la API puede "
             "actualizar CLOUDFLARE_TUNNEL_TOKEN y levantar cloudflared tras el provision."
+        ),
+        "auto_update": auto_update.status_snapshot(path) if gitops.is_repo_available(path) else {
+            "env_enabled": auto_update.env_auto_update_enabled(),
+            "effective_enabled": auto_update.env_auto_update_enabled(),
+            "schedule_utc": f"{auto_update.cron_hour_utc():02d}:{auto_update.cron_minute_utc():02d}",
+            "note": "Monta el repo en el worker para auto-update (ver docker-compose.yml).",
+        },
+        "auto_update_hint": (
+            "El worker ejecuta un cron diario (UTC): git fetch, pull --ff-only si hay commits nuevos "
+            "y docker compose up -d --build en este directorio. Desactivar: ASKBOX_AUTO_UPDATE=false "
+            "o el interruptor abajo. Prueba: docker compose exec worker python -m app.cli auto-update --dry-run"
         ),
     }
 

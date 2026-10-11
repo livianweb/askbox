@@ -12,6 +12,7 @@ export default function DeploySettingsPage() {
 
   const [publicUrl, setPublicUrl] = useState("");
   const [tunnelEnabled, setTunnelEnabled] = useState(false);
+  const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(true);
   const [hostname, setHostname] = useState("");
   const [cfApiToken, setCfApiToken] = useState("");
   const [connectorTokenInput, setConnectorTokenInput] = useState("");
@@ -27,6 +28,7 @@ export default function DeploySettingsPage() {
         if (s.preferences) {
           setPublicUrl(s.preferences.public_url || "");
           setTunnelEnabled(!!s.preferences.tunnel_enabled);
+          setAutoUpdateEnabled(s.preferences.auto_update_enabled !== false);
         }
         if (s.tunnel_hostname) setHostname(s.tunnel_hostname);
         else if (s.preferences?.public_url?.startsWith("https://")) {
@@ -53,7 +55,11 @@ export default function DeploySettingsPage() {
     try {
       const res = await api("/v1/settings/deploy/preferences", {
         method: "PATCH",
-        body: { public_url: publicUrl, tunnel_enabled: tunnelEnabled },
+        body: {
+          public_url: publicUrl,
+          tunnel_enabled: tunnelEnabled,
+          auto_update_enabled: autoUpdateEnabled,
+        },
       });
       setMsg("Preferencias guardadas.");
       if (res.suggested_env) {
@@ -178,6 +184,66 @@ export default function DeploySettingsPage() {
           </p>
         </div>
       )}
+
+      {/* Auto-update diario */}
+      <div className="card">
+        <div className="card-header">
+          <h3 className="card-title">Actualización automática (diaria)</h3>
+          <span className="badge badge-petrol">Git + Docker</span>
+        </div>
+        <p style={{ fontSize: "0.88rem" }}>
+          Cada instancia se actualiza sola: el <strong>worker</strong> hace <code>git pull --ff-only</code>
+          si hay commits nuevos en el remoto y luego <code>docker compose up -d --build</code> en este directorio
+          (nunca otros stacks). Hora en UTC, por defecto 05:00.
+        </p>
+        {status?.auto_update && (
+          <ul className="clean-list" style={{ marginBottom: "1rem" }}>
+            <li>
+              <span>Variable de entorno:</span>
+              <span className={`badge ${status.auto_update.env_enabled ? "badge-emerald" : "badge-slate"}`}>
+                ASKBOX_AUTO_UPDATE={String(status.auto_update.env_enabled)}
+              </span>
+            </li>
+            <li>
+              <span>Activo en runtime:</span>
+              <span className={`badge ${status.auto_update.effective_enabled ? "badge-emerald" : "badge-slate"}`}>
+                {String(status.auto_update.effective_enabled)}
+              </span>
+            </li>
+            <li>
+              <span>Horario (UTC):</span>
+              <code>{status.auto_update.schedule_utc || "05:00"}</code>
+            </li>
+            <li>
+              <span>Última ejecución:</span>
+              <code>{status.auto_update.last_run_at || "—"}</code>
+              {status.auto_update.last_status ? ` (${status.auto_update.last_status})` : ""}
+            </li>
+            {status.auto_update.last_message && (
+              <li>
+                <span>Detalle:</span>
+                <span style={{ fontSize: "0.85rem" }}>{status.auto_update.last_message}</span>
+              </li>
+            )}
+          </ul>
+        )}
+        {status?.auto_update_hint && (
+          <p className="muted" style={{ fontSize: "0.82rem" }}>{status.auto_update_hint}</p>
+        )}
+        <label className="checkbox-label" style={{ marginTop: "0.5rem" }}>
+          <input
+            type="checkbox"
+            checked={autoUpdateEnabled}
+            onChange={(e) => setAutoUpdateEnabled(e.target.checked)}
+            disabled={!status?.repo_accessible}
+          />
+          <span>Preferencia: auto-update habilitado (además de ASKBOX_AUTO_UPDATE en .env)</span>
+        </label>
+        <p className="muted" style={{ fontSize: "0.82rem", marginTop: "0.35rem" }}>
+          Guarda junto con la URL pública (botón abajo). Para desactivar por completo:{" "}
+          <code>ASKBOX_AUTO_UPDATE=false</code> en <code>.env</code> y reinicia el worker.
+        </p>
+      </div>
 
       {/* URL Pública */}
       <div className="card">

@@ -4,9 +4,11 @@
                       imprime por stdout un enlace de reset de 24 h para que elija la suya.
   reset-link EMAIL    emite un enlace de reset de 24 h para un usuario existente.
   git-setup EMAIL [--repo NAME]  crea/conecta remoto GitHub y push; sin --repo hace askbox + kit.
+  auto-update [--dry-run]       comprueba origin y (sin --dry-run) pull --ff-only + compose rebuild.
 
 El enlace de reset es un secreto: redirigir stdout a un archivo con permisos 600, no pegarlo en chats/logs.
 git-setup imprime solo URLs y estado (nunca tokens).
+auto-update imprime JSON de estado (sin secretos).
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ from app.config import settings
 from app.db import create_pool, run_migrations
 from app.routers.auth import _EMAIL, issue_reset_token
 from app.routers.git_settings import RemoteIn, _create_with_token
-from app import gitcreds, gitops
+from app import auto_update, gitcreds, gitops
 from app.routers.git_settings import PRIMARY_REPO
 from app.security import hash_password
 
@@ -121,11 +123,24 @@ async def _main(cmd: str, email: str) -> int:
         await pool.close()
 
 
+def _cmd_auto_update(argv: list[str]) -> int:
+    dry_run = "--dry-run" in argv
+    result = auto_update.run_auto_update(settings.repo_path or None, dry_run=dry_run)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result.get("ok") else 1
+
+
 if __name__ == "__main__":
-    if len(sys.argv) < 3 or sys.argv[1] not in {"ensure-user", "reset-link", "git-setup"}:
+    if len(sys.argv) < 2:
         print(__doc__, file=sys.stderr)
         sys.exit(2)
-    if sys.argv[1] == "git-setup":
+    cmd = sys.argv[1]
+    if cmd == "auto-update":
+        sys.exit(_cmd_auto_update(sys.argv[2:]))
+    if len(sys.argv) < 3 or cmd not in {"ensure-user", "reset-link", "git-setup"}:
+        print(__doc__, file=sys.stderr)
+        sys.exit(2)
+    if cmd == "git-setup":
         email, repo_filter = _parse_git_setup_argv(sys.argv[2:])
         if not email:
             print(__doc__, file=sys.stderr)
@@ -134,4 +149,4 @@ if __name__ == "__main__":
     if len(sys.argv) != 3:
         print(__doc__, file=sys.stderr)
         sys.exit(2)
-    sys.exit(asyncio.run(_main(sys.argv[1], sys.argv[2])))
+    sys.exit(asyncio.run(_main(cmd, sys.argv[2])))

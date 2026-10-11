@@ -75,9 +75,22 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       ASKBOX_REPO_PATH: /repo
+      # Auto-update diario (git pull --ff-only + compose rebuild en este directorio).
+      ASKBOX_AUTO_UPDATE: ${ASKBOX_AUTO_UPDATE:-true}
+      ASKBOX_AUTO_UPDATE_HOUR: ${ASKBOX_AUTO_UPDATE_HOUR:-5}
+      ASKBOX_AUTO_UPDATE_MINUTE: ${ASKBOX_AUTO_UPDATE_MINUTE:-0}
+      GIT_OPTIONAL_LOCKS: "0"
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /repo
     user: "${ASKBOX_UID:-1000}:${ASKBOX_GID:-1000}"
     volumes:
+      - ./:/repo:rw
+      - /dev/null:/repo/.env:ro
+      - ./.git:/repo/.git:rw
       - ./.askbox:/repo/.askbox:rw
+      # Rebuild del stack tras pull (solo este compose, cwd=/repo).
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - redis
       - db
