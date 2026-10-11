@@ -74,11 +74,13 @@ services:
       - api
     restart: unless-stopped
 
+  # Opcional: solo con `docker compose --profile tunnel up -d` y CLOUDFLARE_TUNNEL_TOKEN en .env
   cloudflared:
+    profiles: ["tunnel"]
     image: cloudflare/cloudflared:latest
     container_name: askbox-cloudflared
     restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:?define CLOUDFLARE_TUNNEL_TOKEN en .env para el profile tunnel}
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:

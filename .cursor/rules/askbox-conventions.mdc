@@ -14,6 +14,7 @@ alwaysApply: true
 
 - API FastAPI en el host: **8066** (contenedor interno según `docker-compose.yml`).
 - Web Next.js en el host: **8067**.
+- Cloudflare Tunnel: servicio `cloudflared` solo con compose profile `tunnel` (`docker compose --profile tunnel up -d`); token en `.env`, no en git.
 - No reutilizar puertos ya ocupados en el servidor (p. ej. 8063–8065 agentshop, 8070–8071 gg). Antes de cambiar puertos, comprobar listeners (`ss`, `docker ps`).
 
 ## Llamadas a proveedores LLM

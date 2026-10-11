@@ -23,8 +23,7 @@ build/
 # Backups que puede dejar install.sh del kit de orquestación al sobrescribir con --force
 *.bak-*
 
-# .askbox/git-settings.json NO se ignora a propósito: es config no secreta (ver gitops.py)
-# y debe viajar versionada con el repo.
+# .askbox/git-settings.json y deploy-settings.json NO se ignoran: config no secreta (ver gitops/deployops).
 
 # Entornos/artefactos locales adicionales
 .env.local

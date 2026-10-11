@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 import logging
 
-from app import mailer, ratelimit
+from app import deployops, gitops, mailer, ratelimit
 from app.config import settings
 from app.deps import client_ip, current_user, err
 from app.security import hash_password, new_token, token_hash, verify_password
@@ -68,10 +68,22 @@ async def _open_session(pool, user_id, kind: str, ttl: int) -> str:
     return token
 
 
+def _effective_cookie_secure() -> bool:
+    if gitops.is_repo_available(settings.repo_path):
+        return deployops.effective_cookie_secure(settings.repo_path, settings.cookie_secure, settings.public_url)
+    return settings.cookie_secure
+
+
+def _effective_public_url() -> str:
+    if gitops.is_repo_available(settings.repo_path):
+        return deployops.effective_public_url(settings.repo_path, settings.public_url)
+    return settings.public_url
+
+
 def _set_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         settings.cookie_name, token, max_age=settings.session_ttl_seconds,
-        httponly=True, samesite="lax", secure=settings.cookie_secure, path="/",
+        httponly=True, samesite="lax", secure=_effective_cookie_secure(), path="/",
     )
 
 
@@ -126,7 +138,7 @@ async def forgot(body: ForgotBody, request: Request):
     if not row:
         return out
     token = await issue_reset_token(pool, row["id"], settings.reset_ttl_minutes)
-    url = f"{settings.public_url}/reset?token={token}"
+    url = f"{_effective_public_url()}/reset?token={token}"
     sent = await mailer.send_mail(
         email,
         "askbox: restablecer contraseña",

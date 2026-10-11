@@ -25,6 +25,7 @@ export default function Nav() {
         <>
           <a href="/projects">Proyectos y claves</a>
           <a href="/playground">Playground</a>
+          <a href="/settings/deploy">Despliegue</a>
           <a href="/settings/git">Config. Git</a>
         </>
       )}

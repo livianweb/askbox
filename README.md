@@ -18,23 +18,26 @@ curl -s http://localhost:8066/ready    # db, redis y master_key
 ```
 
 - API: http://localhost:8066 (migraciones SQL automáticas al arrancar, `api/app/migrations/`)
-- Web: http://localhost:8067 (`/login`, `/register`, `/forgot`, `/reset`, `/projects`, `/playground`, `/settings/git`; proxy `/api/*` → API)
+- Web: http://localhost:8067 (`/login`, `/register`, `/forgot`, `/reset`, `/projects`, `/playground`, `/settings/deploy`, `/settings/git`; proxy `/api/*` → API)
 
-### Producción (Cloudflare Tunnel)
+### Clonar y usar sin túnel (por defecto)
 
-Patrón igual que `snake-os`, `agentshop-x` o `proxmox-backups`: servicio `cloudflared` en `docker-compose.yml` con `TUNNEL_TOKEN` desde `.env` (`CLOUDFLARE_TUNNEL_TOKEN`). Ingress en Zero Trust: **askbox.softportweb.com** → `http://web:3000` (Next reescribe `/api/*` hacia la API).
+Tras `cp .env.example .env` y `docker compose up -d --build`, la API y la web escuchan en **localhost** (8066/8067) o en la IP de tu LAN. No hace falta Cloudflare ni `CLOUDFLARE_TUNNEL_TOKEN`.
 
-```bash
-# En .env (no commitear):
-# CLOUDFLARE_TUNNEL_TOKEN=...   # Zero Trust → Tunnels → askbox → Install connector
-# ASKBOX_PUBLIC_URL=https://askbox.softportweb.com
-# ASKBOX_COOKIE_SECURE=true
+### Cloudflare Tunnel (opcional)
 
-docker compose up -d cloudflared
-curl -s https://askbox.softportweb.com/api/health
-```
+El servicio `cloudflared` en `docker-compose.yml` lleva el **profile** `tunnel`: un `docker compose up -d` normal **no** lo levanta. Así cualquiera puede clonar el repo sin token ni túnel.
 
-URL pública: **https://askbox.softportweb.com**
+**Con tu propio túnel:**
+
+1. En [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Networks** → **Tunnels** → crea un tunnel → **Install connector** → copia el token.
+2. En `.env` del host (nunca en git): `CLOUDFLARE_TUNNEL_TOKEN=<tu-token>`, `ASKBOX_PUBLIC_URL=https://tu-dominio`, `ASKBOX_COOKIE_SECURE=true`.
+3. Ingress en CF: hostname público → `http://web:3000` (Next proxea `/api/*` a la API).
+4. Arranque: `docker compose --profile tunnel up -d` (o `--profile tunnel` junto con `up -d --build`).
+
+Opcional: pantalla **`/settings/deploy`** guarda `public_url` y preferencia de túnel en `.askbox/deploy-settings.json` (no secreto) y puede guardar el token **cifrado** en BD; para que `cloudflared` lo use igualmente hay que copiarlo a `CLOUDFLARE_TUNNEL_TOKEN` en `.env` y reiniciar con el profile.
+
+**Este servidor (softportweb):** mantener el túnel con `docker compose --profile tunnel up -d` siempre que actualices el stack.
 
 ## Endpoints
 
@@ -58,6 +61,10 @@ URL pública: **https://askbox.softportweb.com**
 | PUT/POST | `/v1/settings/git/github-token?repo=` | `{token}` → se cifra (AES-256-GCM, `ASKBOX_MASTER_KEY`) en `git_credentials` para ese repo; reemplaza el anterior |
 | DELETE | `/v1/settings/git/github-token?repo=` | Borra el token de ese repo |
 | POST | `/v1/settings/git/push` | `{remote?, branch?}` → `git push -u` de la rama actual (usa el token si el remoto es `https://github.com/...`) |
+| GET | `/v1/settings/deploy/status` | URL pública efectiva, preferencias (`.askbox/deploy-settings.json`), metadatos del token de túnel (`last4` solo) |
+| PATCH | `/v1/settings/deploy/preferences` | `{public_url?, tunnel_enabled?}` — no secretos; sugiere valores para `.env` |
+| PUT/POST | `/v1/settings/deploy/tunnel-token` | `{token}` → cifrado en BD (`cloudflare_tunnel`); **nunca** devuelve el token |
+| DELETE | `/v1/settings/deploy/tunnel-token` | Borra el token de túnel de la BD |
 
 `status`, `remote`, `push` y `github-token` aceptan `?repo=<nombre>`: `askbox` (por defecto) o un repo montado en `ASKBOX_EXTRA_REPOS` (por defecto `cursor-agent-orchestrator`).
 
@@ -110,7 +117,7 @@ Variables que lee la API (`api/app/config.py` → `api/app/mailer.py`): `ASKBOX_
 - Modelos y cadenas en la tabla `model_catalog` (seed en `001_init.sql`); editar filas en BD, no código.
 - Seguridad: AES-256-GCM con AAD `proyecto:proveedor`, nonce aleatorio, `key_version`; la API nunca devuelve claves; logs sin prompts (solo longitud y hash truncado).
 - Límites: prompt ≤ 20000 chars, `max_output_tokens` ≤ 8192, rate limit Redis (`ASKBOX_ASK_RATE_PER_MIN`, 30 por defecto; login 10/min por IP).
-- Tras HTTPS, poner `ASKBOX_COOKIE_SECURE=true`.
+- Tras HTTPS, poner `ASKBOX_COOKIE_SECURE=true` en `.env` (o guardar `public_url` https en `/settings/deploy`; la API usa cookies `Secure` según la URL efectiva aunque el contenedor no se haya reiniciado).
 - Pendiente (fases siguientes): escalada única en `auto`, `json_schema`, multiusuario, uso del worker.
 
 ## Configuración Git del proyecto (`/settings/git`)
