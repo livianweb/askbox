@@ -34,6 +34,10 @@ services:
       GIT_CONFIG_VALUE_1: /repos/cursor-agent-orchestrator
       # Repos adicionales gestionables desde /settings/git (?repo=<nombre>), "nombre=ruta,...".
       ASKBOX_EXTRA_REPOS: ${ASKBOX_EXTRA_REPOS:-cursor-agent-orchestrator=/repos/cursor-agent-orchestrator}
+      # Provision túnel: ruta escribible del .env del host (el árbol /repo enmascara .env con /dev/null).
+      ASKBOX_HOST_ENV_FILE: ${ASKBOX_HOST_ENV_FILE:-}
+      # Opcional: script en el host; la API lo invoca con el connector token por stdin JSON.
+      ASKBOX_TUNNEL_APPLY_SCRIPT: ${ASKBOX_TUNNEL_APPLY_SCRIPT:-}
     # Mismo uid/gid que el dueño del repo en el host: los ficheros que escriba git
     # (.git/config) y .askbox/ no quedan como root. Ajusta en .env si tu uid no es 1000.
     user: "${ASKBOX_UID:-1000}:${ASKBOX_GID:-1000}"
@@ -50,6 +54,10 @@ services:
       # ASKBOX_EXTRA_REPOS (si no, Docker crearía el directorio vacío como root).
       - ${ASKBOX_KIT_PATH:-../cursor-agent-orchestrator}:/repos/cursor-agent-orchestrator:ro
       - ${ASKBOX_KIT_PATH:-../cursor-agent-orchestrator}/.git:/repos/cursor-agent-orchestrator/.git:rw
+      # Descomenta para que POST /v1/settings/deploy/tunnel/provision actualice .env y docker sin pasos manuales:
+      # - ./.env:/host-env/.env:rw
+      # - /var/run/docker.sock:/var/run/docker.sock
+      # y en environment: ASKBOX_HOST_ENV_FILE=/host-env/.env
     depends_on:
       db:
         condition: service_healthy

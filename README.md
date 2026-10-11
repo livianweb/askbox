@@ -29,16 +29,18 @@ Tras `cp .env.example .env` y `docker compose up -d --build`, la API y la web es
 
 El servicio `cloudflared` en `docker-compose.yml` lleva el **profile** `tunnel`: un `docker compose up -d` normal **no** lo levanta. Así cualquiera puede clonar el repo sin token ni túnel.
 
-**Con tu propio túnel:**
+**Flujo recomendado (UI):** en **`/settings/deploy`**
 
-1. En [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Networks** → **Tunnels** → crea un tunnel → **Install connector** → copia el token.
-2. En `.env` del host (nunca en git): `CLOUDFLARE_TUNNEL_TOKEN=<tu-token>`, `ASKBOX_PUBLIC_URL=https://tu-dominio`, `ASKBOX_COOKIE_SECURE=true`.
-3. Ingress en CF: hostname público → `http://web:3000` (Next proxea `/api/*` a la API).
-4. Arranque: `docker compose --profile tunnel up -d` (o `--profile tunnel` junto con `up -d --build`).
+1. Crea un [API token](https://dash.cloudflare.com/profile/api-tokens) con **Account → Cloudflare Tunnel → Edit** y **Zone → DNS → Edit** en la zona de tu dominio.
+2. Pega el token en «API token Cloudflare» (se cifra en BD; la API solo muestra `last4`).
+3. Indica el hostname público (p. ej. `askbox.tudominio.com`) y pulsa **Crear / actualizar túnel**.
+4. La API crea o reutiliza un túnel llamado como el proyecto (`askbox`), configura ingress `hostname → http://web:3000`, CNAME proxied a `{tunnel_id}.cfargotunnel.com`, guarda el connector token cifrado, actualiza `public_url` / cookies en `.askbox/deploy-settings.json` y, si el host lo permite, escribe `.env` y ejecuta `docker compose --profile tunnel up -d cloudflared`.
 
-Opcional: pantalla **`/settings/deploy`** guarda `public_url` y preferencia de túnel en `.askbox/deploy-settings.json` (no secreto) y puede guardar el token **cifrado** en BD; para que `cloudflared` lo use igualmente hay que copiarlo a `CLOUDFLARE_TUNNEL_TOKEN` en `.env` y reiniciar con el profile.
+En Docker, el contenedor `api` no lee `.env` del repo (está enmascarado). Para aplicación automática en el host, monta en `docker-compose.yml` (ver comentarios en el servicio `api`) `./.env` en `/host-env/.env` con `ASKBOX_HOST_ENV_FILE=/host-env/.env`, y opcionalmente `docker.sock`, **o** define `ASKBOX_TUNNEL_APPLY_SCRIPT=/repo/scripts/apply-tunnel.sh` y deja el script ejecutable en el host.
 
-**Este servidor (softportweb):** mantener el túnel con `docker compose --profile tunnel up -d` siempre que actualices el stack.
+**Manual (panel Zero Trust):** crea el tunnel, copia el connector token a `CLOUDFLARE_TUNNEL_TOKEN` en `.env`, `ASKBOX_PUBLIC_URL=https://…`, `ASKBOX_COOKIE_SECURE=true`, ingress → `http://web:3000`, y `docker compose --profile tunnel up -d`.
+
+**Este servidor (softportweb):** mantener el túnel con `docker compose --profile tunnel up -d` al actualizar el stack; el provision desde la UI es idempotente y reutiliza el túnel `askbox` existente.
 
 ## Endpoints
 
@@ -62,9 +64,12 @@ Opcional: pantalla **`/settings/deploy`** guarda `public_url` y preferencia de t
 | PUT/POST | `/v1/settings/git/github-token?repo=` | `{token}` → se cifra (AES-256-GCM, `ASKBOX_MASTER_KEY`) en `git_credentials` para ese repo; reemplaza el anterior |
 | DELETE | `/v1/settings/git/github-token?repo=` | Borra el token de ese repo |
 | POST | `/v1/settings/git/push` | `{remote?, branch?}` → `git push -u` de la rama actual (usa el token si el remoto es `https://github.com/...`) |
-| GET | `/v1/settings/deploy/status` | URL pública efectiva, preferencias (`.askbox/deploy-settings.json`), metadatos del token de túnel (`last4` solo) |
+| GET | `/v1/settings/deploy/status` | URL efectiva, preferencias, tunnel id/hostname, `cloudflared_running`, metadatos tokens (`last4` solo) |
 | PATCH | `/v1/settings/deploy/preferences` | `{public_url?, tunnel_enabled?}` — no secretos; sugiere valores para `.env` |
-| PUT/POST | `/v1/settings/deploy/tunnel-token` | `{token}` → cifrado en BD (`cloudflare_tunnel`); **nunca** devuelve el token |
+| PUT/POST | `/v1/settings/deploy/cloudflare-api-token` | `{token}` API Cloudflare → cifrado (`cloudflare_api`); **nunca** devuelve el token |
+| DELETE | `/v1/settings/deploy/cloudflare-api-token` | Borra el token de API de la BD |
+| POST | `/v1/settings/deploy/tunnel/provision` | `{hostname, api_token?}` crea/actualiza túnel + DNS; guarda connector; opcionalmente `.env` + docker |
+| PUT/POST | `/v1/settings/deploy/tunnel-token` | `{token}` connector → cifrado en BD (`cloudflare_tunnel`); **nunca** devuelve el token |
 | DELETE | `/v1/settings/deploy/tunnel-token` | Borra el token de túnel de la BD |
 
 `status`, `remote`, `push` y `github-token` aceptan `?repo=<nombre>`: `askbox` (por defecto) o un repo montado en `ASKBOX_EXTRA_REPOS` (por defecto `cursor-agent-orchestrator`).

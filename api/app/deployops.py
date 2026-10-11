@@ -16,6 +16,10 @@ _PREFS_REL_PATH = os.path.join(".askbox", "deploy-settings.json")
 DEFAULT_PREFS = {
     "public_url": "",
     "tunnel_enabled": False,
+    "tunnel_id": "",
+    "tunnel_hostname": "",
+    "tunnel_name": "askbox",
+    "tunnel_provisioned_at": None,
 }
 _DEFAULT_PREFS = DEFAULT_PREFS
 
