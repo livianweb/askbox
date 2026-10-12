@@ -64,7 +64,7 @@ En Docker, el contenedor `api` no lee `.env` del repo (está enmascarado). Para 
 | GET | `/v1/projects/{id}/prompts/{name}` | Última versión (`?version=N` opcional) |
 | GET | `/v1/projects/{id}/prompts/{name}/versions` | Historial de versiones |
 | DELETE | `/v1/projects/{id}/prompts/{name}` | Borrar todas las versiones |
-| POST | `/v1/ask` | Sesión o `Authorization: Bearer ab_live_…` (scope `ask:read`). Cuerpo: `prompt` **o** `prompt_template` + `variables`, `system?`, `project_id?` (ignorado con token de proyecto), `tier`, `max_output_tokens` |
+| POST | `/v1/ask` | Sesión o `Authorization: Bearer ab_live_…` (scope `ask:read`). Cuerpo: `prompt` **o** `prompt_template` + `variables`, `system?`, `project_id?` (ignorado con token de proyecto), `tier`, `max_output_tokens`, `attachments?`, `task?` (ver adjuntos abajo) |
 | POST | `/v1/ask/stream` | Igual auth/cuerpo que `/v1/ask`; respuesta **SSE** (`text/event-stream`): eventos `delta` con `text` y `done` con metadatos (`request_id`, tokens, etc.) |
 | POST | `/v1/batch` | Solo sesión. `{project_id?, tier, max_output_tokens, items:[{prompt, system?}]}` → `{job_id, status, total}`; encola worker arq |
 | GET | `/v1/jobs/{job_id}` | Estado del batch e ítems (`text` / `error_code` por prompt) |
@@ -85,6 +85,16 @@ En Docker, el contenedor `api` no lee `.env` del repo (está enmascarado). Para 
 | POST | `/v1/settings/deploy/tunnel/provision` | `{hostname, api_token?}` crea/actualiza túnel + DNS; guarda connector; opcionalmente `.env` + docker |
 | PUT/POST | `/v1/settings/deploy/tunnel-token` | `{token}` connector → cifrado en BD (`cloudflare_tunnel`); **nunca** devuelve el token |
 | DELETE | `/v1/settings/deploy/tunnel-token` | Borra el token de túnel de la BD |
+
+### Adjuntos en `POST /v1/ask`
+
+Archivos **inline** en el JSON (no se guardan en servidor). La respuesta puede incluir `attachments_processed` (metadatos por archivo). En la web, `/playground` permite subirlos y elegir la tarea.
+
+- **Formatos:** PNG, JPEG, WebP y PDF — cada ítem en `attachments`: `{mime, data_base64, filename?}`.
+- **`task` (opcional):** `transcribe` (texto literal), `extract` (datos estructurados), `interpret` (descripción/razonamiento). Si no envías `task`, se infiere del prompt.
+- **Modelos:** con adjuntos, la cascada solo usa filas del catálogo con `supports_vision`. Gemini recibe `inline_data`; OpenRouter, bloques `image_url`. **Los PDF solo van por Gemini** (OpenRouter no admite PDF en adjuntos).
+- **Preproceso de imagen:** antes del proveedor, las imágenes pasan a JPEG (RGB), lado mayor ≤ `ASKBOX_VISION_MAX_EDGE` (default 1600) y calidad `ASKBOX_VISION_JPEG_QUALITY` (default 72); no se agrandan. Los PDF no se reencoden. La caché Redis del ask incluye un digest de los bytes enviados al proveedor.
+- **Límites:** `ASKBOX_MAX_ATTACHMENTS`, `ASKBOX_MAX_ATTACHMENT_BYTES`, `ASKBOX_MAX_ATTACHMENTS_TOTAL_BYTES` (defaults y detalle en `api/app/llm/attachments.py`).
 
 `status`, `remote`, `push` y `github-token` aceptan `?repo=<nombre>`: `askbox` (por defecto) o un repo montado en `ASKBOX_EXTRA_REPOS` (por defecto `cursor-agent-orchestrator`).
 
