@@ -18,6 +18,7 @@ from app.llm.attachments import (  # noqa: E402
     sniff_mime,
     temperature_for_task,
 )
+from app.ocr.engine import OcrError  # noqa: E402
 
 try:
     from PIL import Image
@@ -127,6 +128,61 @@ class ImagePreprocessTests(unittest.TestCase):
         mock_open.assert_not_called()
         self.assertEqual(out, pdf)
         self.assertEqual(mime, "application/pdf")
+
+
+class PdfRasterAttachmentTests(unittest.TestCase):
+    def _minimal_pdf_b64(self) -> str:
+        return base64.b64encode(b"%PDF-1.4\n<< /Type /Pages /Count 2 >>\n").decode()
+
+    @unittest.skipIf(Image is None, "Pillow no instalado")
+    @patch("app.llm.attachments.ocr_engine.render_page")
+    @patch("app.llm.attachments.ocr_engine.pdf_page_count", return_value=2)
+    def test_pdf_rasterized_to_jpeg_per_page(self, _count, render):
+        png = _png_image_bytes(640, 480)
+        render.side_effect = [png, png]
+        norm = normalize_attachments(
+            [{"mime": "application/pdf", "data_base64": self._minimal_pdf_b64(), "filename": "scan.pdf"}]
+        )
+        self.assertEqual(len(norm), 2)
+        self.assertTrue(all(a.mime == "image/jpeg" for a in norm))
+        self.assertEqual(render.call_count, 2)
+        self.assertEqual(norm[0].filename, "scan.pdf p1")
+        self.assertEqual(norm[1].filename, "scan.pdf p2")
+
+    @patch("app.llm.attachments.ocr_engine.render_page", side_effect=OcrError("render_failed", "fail"))
+    @patch("app.llm.attachments.ocr_engine.pdf_page_count", return_value=1)
+    def test_pdf_fallback_when_raster_fails(self, _count, _render):
+        pdf = b"%PDF-1.4\n<< /Type /Pages /Count 1 >>\n"
+        b64 = base64.b64encode(pdf).decode()
+        norm = normalize_attachments([{"mime": "application/pdf", "data_base64": b64}])
+        self.assertEqual(len(norm), 1)
+        self.assertEqual(norm[0].mime, "application/pdf")
+        self.assertEqual(norm[0].data, pdf)
+
+    @unittest.skipIf(Image is None, "Pillow no instalado")
+    @patch("app.llm.attachments.settings")
+    @patch("app.llm.attachments.ocr_engine.render_page")
+    @patch("app.llm.attachments.ocr_engine.pdf_page_count", return_value=5)
+    def test_pdf_respects_max_pages_setting(self, _count, render, mock_settings):
+        mock_settings.pdf_max_pages = 2
+        mock_settings.pdf_dpi = 200
+        png = _png_image_bytes(200, 200)
+        render.return_value = png
+        norm = normalize_attachments([{"mime": "application/pdf", "data_base64": self._minimal_pdf_b64()}])
+        self.assertEqual(len(norm), 2)
+        self.assertEqual(render.call_count, 2)
+
+    @unittest.skipIf(Image is None, "Pillow no instalado")
+    @patch("app.llm.attachments.ocr_engine.render_page")
+    @patch("app.llm.attachments.ocr_engine.pdf_page_count", return_value=3)
+    def test_pdf_fallback_when_expansion_exceeds_max_attachments(self, _count, render):
+        png = _png_image_bytes(100, 100)
+        render.return_value = png
+        with patch.object(attachments, "MAX_ATTACHMENTS", 2):
+            norm = normalize_attachments([{"mime": "application/pdf", "data_base64": self._minimal_pdf_b64()}])
+        self.assertEqual(len(norm), 1)
+        self.assertEqual(norm[0].mime, "application/pdf")
+        render.assert_not_called()
 
     @unittest.skipIf(Image is None, "Pillow no instalado")
     def test_normalize_uses_compressed_bytes_for_digest(self):

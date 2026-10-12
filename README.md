@@ -66,6 +66,7 @@ En Docker, el contenedor `api` no lee `.env` del repo (está enmascarado). Para 
 | DELETE | `/v1/projects/{id}/prompts/{name}` | Borrar todas las versiones |
 | POST | `/v1/ask` | Sesión o `Authorization: Bearer ab_live_…` (scope `ask:read`). Cuerpo: `prompt` **o** `prompt_template` + `variables`, `system?`, `project_id?` (ignorado con token de proyecto), `tier`, `max_output_tokens`, `attachments?`, `task?` (ver adjuntos abajo) |
 | POST | `/v1/ask/stream` | Igual auth/cuerpo que `/v1/ask`; respuesta **SSE** (`text/event-stream`): eventos `delta` con `text` y `done` con metadatos (`request_id`, tokens, etc.) |
+| POST | `/v1/ocr` | Sesión o `Authorization: Bearer ab_live_…` (scope `ask:read`). OCR de **una página** de PDF o imagen (Tesseract + poppler). Cuerpo: `{data_base64, mime, page?=1, lang?="spa", psm?=4, words?=false}`. Ver «OCR» abajo |
 | POST | `/v1/batch` | Solo sesión. `{project_id?, tier, max_output_tokens, items:[{prompt, system?}]}` → `{job_id, status, total}`; encola worker arq |
 | GET | `/v1/jobs/{job_id}` | Estado del batch e ítems (`text` / `error_code` por prompt) |
 | GET | `/v1/alerts` | Claves de proyecto en `invalid` o `exhausted` (sesión) |
@@ -99,6 +100,33 @@ Archivos **inline** en el JSON (no se guardan en servidor). La respuesta puede i
 `status`, `remote`, `push` y `github-token` aceptan `?repo=<nombre>`: `askbox` (por defecto) o un repo montado en `ASKBOX_EXTRA_REPOS` (por defecto `cursor-agent-orchestrator`).
 
 **Pantalla `/settings/git` en Docker:** `docker-compose.yml` monta el repo en el contenedor `api` como `/repo` (`ASKBOX_REPO_PATH=/repo`): árbol en solo lectura, `.git` y `.askbox/` en lectura/escritura, y `.env` enmascarado con `/dev/null` (los secretos no son legibles desde el contenedor). La API corre con `ASKBOX_UID`/`ASKBOX_GID` (por defecto 1000:1000, el dueño del repo) para no dejar ficheros root en `.git`. El **worker** monta el repo (sin leer `.env`) y `docker.sock` para el **auto-update diario** (ver abajo). Sin `gh auth login` en el host/contenedor no se puede crear remoto con `gh`; conectar uno existente (`POST /v1/settings/git/remote`) sí funciona.
+
+### OCR: `POST /v1/ocr`
+
+Motor genérico (sin reglas de negocio de ningún cliente): convierte una página de PDF o imagen en **renglones visuales** con segmentos. El archivo va inline en base64 y **no se guarda**; la traza en `requests` solo guarda tamaño y hash truncado (`tier_requested="ocr"`).
+
+```bash
+B64=$(base64 -w0 albaran.pdf)
+curl -s -H "Authorization: Bearer $ASKBOX_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"data_base64\":\"$B64\",\"mime\":\"application/pdf\",\"page\":1}" http://localhost:8066/v1/ocr
+```
+
+Respuesta:
+
+```json
+{"page": 1, "page_count": 14, "source": "tesseract", "rotation": 0,
+ "lines": [{"text": "COD123 TORNILLO 10,00", "segments": ["COD123 TORNILLO", "10,00"]}]}
+```
+
+- `source`: `pdf_text` (PDF con texto real, `pdftotext -layout`, ≥ 80 letras), `tesseract` (escaneos e imágenes) o `blank` (hoja en blanco, `lines: []`).
+- `rotation`: grados en sentido horario aplicados antes del OCR (0/90/180/270). Se decide con el OSD de Tesseract (confianza ≥ 2) y, si no es fiable o no hay OSD, probando un giro de 270° y comparando la calidad de lectura.
+- Preproceso: gris = máximo de R/G/B (canal B de HSB), que borra subrayado amarillo y boli azul y deja el texto negro. PDF a 150 ppp (comprobación de blanco y giro) y 300 ppp (lectura).
+- `lines`: palabras con `conf > 10` y `height > 4` agrupadas por altura (mediana `h`): mismo renglón si el centro vertical dista ≤ `0.55·h`; segmento nuevo si el hueco horizontal supera `2.5·h`. Con `words: true` y `source=tesseract` se añade `words: [{text, conf, bbox:{left, top, width, height}}]`.
+- `lang` (`spa`, `eng`, `spa+eng`…) debe estar instalado: la imagen Docker trae `spa`, `eng` y `osd`. `psm` 1–13.
+- Formatos: `application/pdf`, `image/png`, `image/jpeg`, `image/webp` (se valida el contenido contra el `mime`). Páginas 1-based; en imágenes solo la 1.
+- Errores (`{"error": {code, message}}`): `413 file_too_large`, `422` `invalid_mime` / `mime_mismatch` / `invalid_lang` / `page_out_of_range` / `invalid_image`, `429 rate_limited`, `503 ocr_busy` / `ocr_unavailable`, `504 ocr_timeout`.
+
+Variables (todas con default; ver `docker-compose.yml`): `ASKBOX_OCR_CONCURRENCY` (1; el OCR corre en threadpool con semáforo), `ASKBOX_OCR_MAX_BYTES` (25 MiB, independiente del límite de adjuntos de `/v1/ask`), `ASKBOX_OCR_TIMEOUT` (120 s por petición, repartido entre subprocesos), `ASKBOX_OCR_RATE_PER_MIN` (240 por token o sesión; 0 = sin límite), `ASKBOX_OCR_TESSDATA_PREFIX` (vacío = tessdata del sistema), y `ASKBOX_PDF_DPI` (200) / `ASKBOX_PDF_MAX_PAGES` (10) para el rasterizado de PDF adjuntos. Tesseract corre con `OMP_THREAD_LIMIT=1`. Requiere `tesseract-ocr`, `tesseract-ocr-spa`, `tesseract-ocr-osd` y `poppler-utils` (ya en `api/Dockerfile`).
 
 ### Auto-update diario (cada instancia)
 

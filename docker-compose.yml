@@ -12,6 +12,14 @@ services:
       ASKBOX_COOKIE_SECURE: ${ASKBOX_COOKIE_SECURE:-false}
       ASKBOX_ALLOW_REGISTER: ${ASKBOX_ALLOW_REGISTER:-false}
       ASKBOX_ASK_RATE_PER_MIN: ${ASKBOX_ASK_RATE_PER_MIN:-30}
+      # POST /v1/ocr (Tesseract + poppler) y rasterizado de PDF adjuntos en /v1/ask.
+      ASKBOX_OCR_CONCURRENCY: ${ASKBOX_OCR_CONCURRENCY:-1}
+      ASKBOX_OCR_MAX_BYTES: ${ASKBOX_OCR_MAX_BYTES:-26214400}
+      ASKBOX_OCR_TIMEOUT: ${ASKBOX_OCR_TIMEOUT:-120}
+      ASKBOX_OCR_RATE_PER_MIN: ${ASKBOX_OCR_RATE_PER_MIN:-240}
+      ASKBOX_PDF_DPI: ${ASKBOX_PDF_DPI:-200}
+      ASKBOX_PDF_MAX_PAGES: ${ASKBOX_PDF_MAX_PAGES:-10}
+      OMP_THREAD_LIMIT: "1"            # Tesseract en un solo hilo (previsible bajo carga)
       ASKBOX_PUBLIC_URL: ${ASKBOX_PUBLIC_URL:-http://localhost:8067}
       # Swagger/ReDoc detrás del proxy Next (/api/*): rutas «Try it out» y carga del esquema.
       ASKBOX_API_EXTERNAL_PREFIX: ${ASKBOX_API_EXTERNAL_PREFIX:-/api}

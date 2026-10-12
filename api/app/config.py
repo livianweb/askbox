@@ -81,6 +81,16 @@ class Settings:
     openrouter_referer: str = os.getenv("ASKBOX_OPENROUTER_REFERER", "https://askbox.local")
     openrouter_title: str = os.getenv("ASKBOX_OPENROUTER_TITLE", "askbox")
 
+    # OCR (POST /v1/ocr, app/ocr/engine.py). Todo con default: sin variables el comportamiento
+    # existente no cambia. ASKBOX_PDF_* los usa además el rasterizado de PDF adjuntos en /v1/ask.
+    ocr_concurrency: int = max(1, _int("ASKBOX_OCR_CONCURRENCY", 1))
+    ocr_max_bytes: int = _int("ASKBOX_OCR_MAX_BYTES", 25 * 1024 * 1024)
+    ocr_timeout: float = float(os.getenv("ASKBOX_OCR_TIMEOUT", "120") or 120)  # techo total por petición (s)
+    ocr_rate_per_min: int = _int("ASKBOX_OCR_RATE_PER_MIN", 240)  # por token/sesión; 0 = sin límite
+    ocr_tessdata_prefix: str = os.getenv("ASKBOX_OCR_TESSDATA_PREFIX", "")  # vacío = el del sistema
+    pdf_dpi: int = _int("ASKBOX_PDF_DPI", 200)
+    pdf_max_pages: int = _int("ASKBOX_PDF_MAX_PAGES", 10)
+
     # Pantalla de configuración Git (ver app/gitops.py). Ruta del repo accesible desde este
     # proceso; vacío/no accesible => la pantalla lo informa en vez de fallar o simular datos.
     repo_path: str = os.getenv("ASKBOX_REPO_PATH", "") or _default_repo_path()

@@ -4,6 +4,7 @@ Límites y preproceso de imagen (env):
   ASKBOX_MAX_ATTACHMENTS, ASKBOX_MAX_ATTACHMENT_BYTES, ASKBOX_MAX_ATTACHMENTS_TOTAL_BYTES
   ASKBOX_VISION_MAX_EDGE (lado mayor máx. antes del proveedor, default 1600)
   ASKBOX_VISION_JPEG_QUALITY (recompresión JPEG, default 72)
+  ASKBOX_PDF_DPI, ASKBOX_PDF_MAX_PAGES (raster de PDF adjunto → JPEG por página)
 """
 from __future__ import annotations
 
@@ -14,7 +15,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from app.config import settings
 from app.deps import err
+from app.ocr import engine as ocr_engine
 
 ALLOWED_MIMES = frozenset(
     {
@@ -86,6 +89,44 @@ def preprocess_image_for_provider(data: bytes, declared_mime: str) -> tuple[byte
         return buf.getvalue(), "image/jpeg"
     except Exception:
         return data, declared_mime
+
+
+def _rasterize_pdf_for_provider(pdf_bytes: bytes, *, pages: int) -> list[bytes] | None:
+    """Un JPEG por página (preprocesado visión). None → enviar el PDF original al proveedor."""
+    if pages < 1:
+        return None
+    try:
+        out: list[bytes] = []
+        dpi = settings.pdf_dpi
+        for page in range(1, pages + 1):
+            png = ocr_engine.render_page(pdf_bytes, page, dpi, gray=False)
+            jpeg, mime = preprocess_image_for_provider(png, "image/png")
+            if mime != "image/jpeg":
+                return None
+            out.append(jpeg)
+        return out if len(out) == pages else None
+    except Exception:
+        return None
+
+
+def _pdf_pages_to_rasterize(pdf_bytes: bytes, *, slots: int) -> int:
+    """Páginas a rasterizar (0 = mantener PDF original)."""
+    if slots < 1:
+        return 0
+    try:
+        page_count = ocr_engine.pdf_page_count(pdf_bytes)
+    except Exception:
+        return 0
+    want = min(page_count, max(1, settings.pdf_max_pages))
+    return want if want <= slots else 0
+
+
+def _page_filename(filename: str | None, page: int, page_count: int) -> str | None:
+    if not filename or page_count <= 1:
+        return filename
+    suffix = f" p{page}"
+    base = filename[: max(0, 255 - len(suffix))]
+    return (base + suffix) if base else suffix.strip()
 
 
 def sniff_mime(data: bytes) -> str | None:
@@ -202,6 +243,21 @@ def normalize_attachments(raw: list[dict] | None) -> list[NormalizedAttachment]:
         filename = item.get("filename")
         if filename is not None:
             filename = str(filename).strip()[:255] or None
+        if declared == "application/pdf":
+            pages = _pdf_pages_to_rasterize(data, slots=MAX_ATTACHMENTS - len(out))
+            jpegs = _rasterize_pdf_for_provider(data, pages=pages) if pages else None
+            if jpegs:
+                for page_idx, jpeg in enumerate(jpegs, start=1):
+                    out.append(
+                        NormalizedAttachment(
+                            mime="image/jpeg",
+                            data=jpeg,
+                            sha256=hashlib.sha256(jpeg).hexdigest(),
+                            size=len(jpeg),
+                            filename=_page_filename(filename, page_idx, len(jpegs)),
+                        )
+                    )
+                continue
         send_data, send_mime = preprocess_image_for_provider(data, declared)
         out.append(
             NormalizedAttachment(
