@@ -7,11 +7,18 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from app import ask_exec, ratelimit
+from app.llm import attachments
 from app.config import settings
 from app.deps import AskAuth, ask_auth, current_user, err
 from app.routers.projects import get_project
 
 router = APIRouter(prefix="/v1", tags=["ask"])
+
+
+class AskAttachmentIn(BaseModel):
+    mime: str = Field(..., max_length=128)
+    data_base64: str = Field(..., max_length=30_000_000)
+    filename: str | None = Field(default=None, max_length=255)
 
 
 class AskIn(BaseModel):
@@ -23,6 +30,15 @@ class AskIn(BaseModel):
     tier: str = Field(default="auto", pattern="^(auto|fast|balanced|strong)$")
     max_output_tokens: int = Field(default=512, ge=1)
     json_schema: dict | None = Field(default=None, description="Si se envía, tier=auto lo considera y valida la respuesta JSON.")
+    attachments: list[AskAttachmentIn] | None = Field(
+        default=None,
+        description="Adjuntos inline (imagen o PDF); no se almacenan en servidor.",
+    )
+    task: str | None = Field(
+        default=None,
+        pattern="^(transcribe|extract|interpret)$",
+        description="Tarea con adjuntos: transcribe | extract | interpret.",
+    )
 
     @model_validator(mode="after")
     def _prompt_or_template(self):
@@ -35,7 +51,7 @@ class AskIn(BaseModel):
         return self
 
 
-async def _prepare_ask(pool, redis, auth: AskAuth, body: AskIn):
+async def _prepare_ask(pool, redis, auth: AskAuth, body: AskIn) -> tuple:
     if auth.mode == "session":
         await ratelimit.check(redis, f"ask:{auth.user_id}", settings.ask_rate_per_min)
     if auth.access_token_id:
@@ -71,13 +87,23 @@ async def _prepare_ask(pool, redis, auth: AskAuth, body: AskIn):
     if body.max_output_tokens > settings.max_output_tokens_cap:
         raise err(422, "max_tokens_too_large", f"max_output_tokens máx {settings.max_output_tokens_cap}.")
 
-    return project, messages, prompt
+    raw_atts = [a.model_dump() for a in (body.attachments or [])]
+    normalized = attachments.normalize_attachments(raw_atts if raw_atts else None)
+    task_used = None
+    if normalized:
+        task_used = attachments.infer_task(
+            prompt,
+            json_schema=body.json_schema,
+            task_requested=body.task,
+        )
+
+    return project, messages, prompt, normalized, task_used
 
 
 @router.post("/ask")
 async def ask(body: AskIn, request: Request, auth: AskAuth = Depends(ask_auth)):
     pool, redis = request.app.state.pool, request.app.state.redis
-    project, messages, prompt = await _prepare_ask(pool, redis, auth, body)
+    project, messages, prompt, normalized, task_used = await _prepare_ask(pool, redis, auth, body)
     return await ask_exec.run_ask(
         pool,
         redis,
@@ -89,6 +115,8 @@ async def ask(body: AskIn, request: Request, auth: AskAuth = Depends(ask_auth)):
         messages=messages,
         prompt=prompt,
         json_schema=body.json_schema,
+        normalized_attachments=normalized or None,
+        task_used=task_used,
     )
 
 
@@ -99,7 +127,7 @@ def _sse(data: dict) -> str:
 @router.post("/ask/stream")
 async def ask_stream(body: AskIn, request: Request, auth: AskAuth = Depends(ask_auth)):
     pool, redis = request.app.state.pool, request.app.state.redis
-    project, messages, prompt = await _prepare_ask(pool, redis, auth, body)
+    project, messages, prompt, normalized, task_used = await _prepare_ask(pool, redis, auth, body)
 
     async def event_stream():
         async for event in ask_exec.iter_stream_events(
@@ -113,6 +141,8 @@ async def ask_stream(body: AskIn, request: Request, auth: AskAuth = Depends(ask_
             messages=messages,
             prompt=prompt,
             json_schema=body.json_schema,
+            normalized_attachments=normalized or None,
+            task_used=task_used,
         ):
             yield _sse(event)
 

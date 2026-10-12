@@ -12,7 +12,8 @@ import re
 from typing import Any
 
 from app.config import settings
-from app.llm import cache, catalog, keypool
+from app.llm import attachments, cache, catalog, keypool
+from app.llm.attachments import NormalizedAttachment
 from app.llm.errors import LLMError
 from app.llm.providers import gemini, openrouter
 from app.llm.schema_check import response_matches_schema
@@ -97,6 +98,8 @@ async def _cascade_peers(
     json_schema: dict | None,
     ttl: int,
     ckey: str,
+    require_vision: bool = False,
+    temperature: float = 0.4,
 ) -> dict[str, Any]:
     attempts = 0
     errors: list[str] = []
@@ -120,7 +123,9 @@ async def _cascade_peers(
         )
 
     active = tuple(p for p in PROVIDER_ORDER if p in provider_keys)
-    peers = await catalog.peer_chain(pool, effective_tier, active, settings.max_models_per_provider)
+    peers = await catalog.peer_chain(
+        pool, effective_tier, active, settings.max_models_per_provider, require_vision=require_vision
+    )
     if not peers:
         raise AskFailure(
             "Sin modelos habilitados en model_catalog para este tier.",
@@ -147,6 +152,7 @@ async def _cascade_peers(
                     api_key=handle.secret,
                     model=model["slug"],
                     max_tokens=min(max_tokens, model["max_output_tokens"]),
+                    temperature=temperature,
                 )
             except LLMError as exc:
                 errors.append(f"{tag}: {exc}")
@@ -213,6 +219,9 @@ async def _cascade(
     prompt_rendered: str,
     ttl: int,
     ckey: str,
+    attachment_digest: str = "",
+    require_vision: bool = False,
+    temperature: float = 0.4,
 ) -> dict[str, Any]:
     tier_attempt = effective_tier
     total_attempts = 0
@@ -228,6 +237,8 @@ async def _cascade(
                 json_schema=json_schema,
                 ttl=ttl,
                 ckey=ckey,
+                require_vision=require_vision,
+                temperature=temperature,
             )
             if tier_attempt != effective_tier:
                 res["tier_downgraded_from"] = effective_tier
@@ -243,7 +254,12 @@ async def _cascade(
             log.info("cascada: bajada de tier %s → %s (peers agotados)", tier_attempt, lower)
             tier_attempt = lower
             ckey = cache.cache_key(
-                str(project["id"]), prompt_rendered, tier_attempt, max_tokens, _schema_key(json_schema)
+                str(project["id"]),
+                prompt_rendered,
+                tier_attempt,
+                max_tokens,
+                _schema_key(json_schema),
+                attachment_digest,
             )
 
 
@@ -256,9 +272,19 @@ async def ask(
     tier: str,
     max_tokens: int,
     json_schema: dict | None = None,
+    normalized_attachments: list[NormalizedAttachment] | None = None,
+    task_used: str | None = None,
 ) -> dict[str, Any]:
-    prompt_rendered = "\n".join(f"{m['role']}:{m['content']}" for m in messages)
+    atts = normalized_attachments or []
+    if atts:
+        messages = attachments.attach_to_messages(messages, atts)
+    prompt_rendered = "\n".join(f"{m['role']}:{m.get('content') or ''}" for m in messages)
     schema_s = _schema_key(json_schema)
+    attachment_digest = attachments.attachments_cache_digest(atts)
+    temperature = (
+        attachments.temperature_for_task(task_used or attachments.TASK_INTERPRET) if atts else 0.4
+    )
+    require_vision = bool(atts)
     requested_auto = tier == "auto"
     effective_tier = (
         infer_tier_from_text(
@@ -271,7 +297,9 @@ async def ask(
         else tier
     )
 
-    ckey = cache.cache_key(str(project["id"]), prompt_rendered, effective_tier, max_tokens, schema_s)
+    ckey = cache.cache_key(
+        str(project["id"]), prompt_rendered, effective_tier, max_tokens, schema_s, attachment_digest
+    )
     ttl = int(project["cache_ttl_seconds"] or 0)
     if ttl > 0:
         hit = await cache.get(redis, ckey)
@@ -301,6 +329,9 @@ async def ask(
             prompt_rendered=prompt_rendered,
             ttl=ttl,
             ckey=ckey,
+            attachment_digest=attachment_digest,
+            require_vision=require_vision,
+            temperature=temperature,
         )
     except AskFailure:
         if not requested_auto:
@@ -309,7 +340,9 @@ async def ask(
         if not escalated:
             raise
         log.info("auto: escalada única %s → %s", effective_tier, escalated)
-        ckey2 = cache.cache_key(str(project["id"]), prompt_rendered, escalated, max_tokens, schema_s)
+        ckey2 = cache.cache_key(
+            str(project["id"]), prompt_rendered, escalated, max_tokens, schema_s, attachment_digest
+        )
         res = await _cascade(
             pool,
             redis,
@@ -321,6 +354,9 @@ async def ask(
             prompt_rendered=prompt_rendered,
             ttl=ttl,
             ckey=ckey2,
+            attachment_digest=attachment_digest,
+            require_vision=require_vision,
+            temperature=temperature,
         )
         res["tier_used"] = escalated
         res["tier_escalated_from"] = effective_tier

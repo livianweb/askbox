@@ -1,9 +1,12 @@
 """Cliente Gemini (una llamada = un modelo; la cadena la decide router.py desde model_catalog)."""
 from __future__ import annotations
 
+import base64
+
 import httpx
 
 from app.config import settings
+from app.llm.attachments import NormalizedAttachment
 from app.llm.errors import LLMError, classify
 
 GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -20,22 +23,45 @@ def _error_message(resp: httpx.Response) -> str:
     return f"HTTP {resp.status_code}"
 
 
+def _attachment_parts(atts: list[NormalizedAttachment]) -> list[dict]:
+    parts: list[dict] = []
+    for att in atts:
+        parts.append(
+            {
+                "inline_data": {
+                    "mime_type": att.mime,
+                    "data": base64.b64encode(att.data).decode("ascii"),
+                }
+            }
+        )
+    return parts
+
+
 def _to_contents(messages: list[dict]) -> tuple[str, list[dict]]:
     system_bits: list[str] = []
     contents: list[dict] = []
     for msg in messages:
         role = msg.get("role") or "user"
         text = (msg.get("content") or "").strip()
-        if not text:
-            continue
+        atts: list[NormalizedAttachment] = msg.get("attachments") or []
         if role == "system":
-            system_bits.append(text)
+            if text:
+                system_bits.append(text)
             continue
         grole = "user" if role == "user" else "model"
-        if contents and contents[-1]["role"] == grole:
+        parts: list[dict] = []
+        if text:
+            parts.append({"text": text})
+        if atts:
+            parts.extend(_attachment_parts(atts))
+        if not parts:
+            continue
+        if contents and contents[-1]["role"] == grole and not atts:
             contents[-1]["parts"][0]["text"] += "\n\n" + text
+        elif contents and contents[-1]["role"] == grole and atts:
+            contents[-1]["parts"].extend(parts)
         else:
-            contents.append({"role": grole, "parts": [{"text": text}]})
+            contents.append({"role": grole, "parts": parts})
     if not contents:
         raise LLMError("No hay mensajes para enviar a Gemini", kind="fatal")
     return "\n\n".join(system_bits), contents

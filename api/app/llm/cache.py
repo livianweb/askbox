@@ -8,8 +8,15 @@ import logging
 log = logging.getLogger(__name__)
 
 
-def cache_key(project_id: str, prompt_rendered: str, tier: str, max_tokens: int, json_schema: str = "") -> str:
-    raw = "\x1f".join([project_id, prompt_rendered, tier, str(max_tokens), json_schema])
+def cache_key(
+    project_id: str,
+    prompt_rendered: str,
+    tier: str,
+    max_tokens: int,
+    json_schema: str = "",
+    attachment_digest: str = "",
+) -> str:
+    raw = "\x1f".join([project_id, prompt_rendered, tier, str(max_tokens), json_schema, attachment_digest])
     return "askbox:cache:" + hashlib.sha256(raw.encode()).hexdigest()
 
 

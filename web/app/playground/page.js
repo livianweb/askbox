@@ -50,6 +50,8 @@ export default function Playground() {
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [curlCopied, setCurlCopied] = useState(false);
+  const [attachmentFiles, setAttachmentFiles] = useState([]);
+  const [taskMode, setTaskMode] = useState("");
 
   useEffect(() => {
     api("/v1/projects")
@@ -67,6 +69,23 @@ export default function Playground() {
     setError("");
   }
 
+  function readFileAsBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result;
+        const comma = String(dataUrl).indexOf(",");
+        resolve({
+          mime: file.type,
+          data_base64: comma >= 0 ? String(dataUrl).slice(comma + 1) : "",
+          filename: file.name,
+        });
+      };
+      reader.onerror = () => reject(new Error(`No se pudo leer ${file.name}`));
+      reader.readAsDataURL(file);
+    });
+  }
+
   async function send(e) {
     e.preventDefault();
     if (!prompt.trim()) return;
@@ -74,15 +93,21 @@ export default function Playground() {
     setError("");
     setResult(null);
     try {
-      const res = await api("/v1/ask", {
-        method: "POST",
-        body: {
-          project_id: projectId || undefined,
-          tier,
-          prompt,
-          max_output_tokens: Number(maxTokens),
-        },
-      });
+      let attachmentsPayload;
+      if (attachmentFiles.length > 0) {
+        attachmentsPayload = await Promise.all(attachmentFiles.map(readFileAsBase64));
+      }
+      const body = {
+        project_id: projectId || undefined,
+        tier,
+        prompt,
+        max_output_tokens: Number(maxTokens),
+      };
+      if (attachmentsPayload?.length) {
+        body.attachments = attachmentsPayload;
+        if (taskMode) body.task = taskMode;
+      }
+      const res = await api("/v1/ask", { method: "POST", body });
       setResult(res);
     } catch (err) {
       setError(`${err.status || ""} ${err.code || ""}: ${err.message}`);
@@ -207,6 +232,36 @@ export default function Playground() {
                 <option value="strong">strong — Máximo razonamiento</option>
               </select>
             </div>
+
+            <div>
+              <label htmlFor="input-attachments">Adjuntos (imagen o PDF)</label>
+              <div className="field-desc">Opcional. Se envían en base64 inline; no se guardan en el servidor.</div>
+              <input
+                id="input-attachments"
+                type="file"
+                accept="image/png,image/jpeg,image/webp,application/pdf,image/*"
+                multiple
+                onChange={(e) => setAttachmentFiles(Array.from(e.target.files || []))}
+              />
+              {attachmentFiles.length > 0 && (
+                <small className="muted" style={{ display: "block", marginTop: "0.25rem" }}>
+                  {attachmentFiles.length} archivo(s): {attachmentFiles.map((f) => f.name).join(", ")}
+                </small>
+              )}
+            </div>
+
+            {attachmentFiles.length > 0 && (
+              <div>
+                <label htmlFor="select-task">Tarea con adjuntos</label>
+                <div className="field-desc">Si no eliges, askbox infiere transcribe / extract / interpret.</div>
+                <select id="select-task" value={taskMode} onChange={(e) => setTaskMode(e.target.value)}>
+                  <option value="">Inferir automáticamente</option>
+                  <option value="transcribe">transcribe — texto literal</option>
+                  <option value="extract">extract — datos estructurados</option>
+                  <option value="interpret">interpret — descripción o análisis</option>
+                </select>
+              </div>
+            )}
 
             <div>
               <label htmlFor="input-maxtokens">Max Tokens: {maxTokens}</label>
@@ -344,6 +399,16 @@ export default function Playground() {
                 {result.tier_escalated_from && (
                   <span className="badge badge-amber" title="Tier escalado automáticamente">
                     ↑ Escalado desde {result.tier_escalated_from}
+                  </span>
+                )}
+                {result.task_used && (
+                  <span className="badge badge-slate" title="Tarea aplicada a los adjuntos">
+                    task {result.task_used}
+                  </span>
+                )}
+                {result.attachments_processed?.length > 0 && (
+                  <span className="badge badge-slate" title="Adjuntos procesados (metadatos)">
+                    {result.attachments_processed.length} adjunto(s)
                   </span>
                 )}
               </div>

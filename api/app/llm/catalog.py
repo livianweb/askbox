@@ -9,10 +9,18 @@ TIER_CLASSES = {
 }
 
 
-async def _models_for_class(pool, provider: str, power_class: str, limit: int) -> list[dict]:
+async def _models_for_class(
+    pool,
+    provider: str,
+    power_class: str,
+    limit: int,
+    *,
+    require_vision: bool = False,
+) -> list[dict]:
+    vision_clause = " AND supports_vision" if require_vision else ""
     rows = await pool.fetch(
-        "SELECT slug, tier, max_output_tokens, priority FROM model_catalog "
-        "WHERE enabled AND provider = $1 AND tier = $2 ORDER BY priority, slug LIMIT $3",
+        f"SELECT slug, tier, max_output_tokens, priority FROM model_catalog "
+        f"WHERE enabled AND provider = $1 AND tier = $2{vision_clause} ORDER BY priority, slug LIMIT $3",
         provider,
         power_class,
         limit,
@@ -30,13 +38,22 @@ def order_peer_batch(provider_order: tuple[str, ...], batch: list[tuple[str, dic
     return [(p, {k: v for k, v in m.items() if k != "priority"}) for p, m in ordered]
 
 
-async def peer_chain(pool, tier: str, providers: tuple[str, ...], limit_per_provider: int) -> list[tuple[str, dict]]:
+async def peer_chain(
+    pool,
+    tier: str,
+    providers: tuple[str, ...],
+    limit_per_provider: int,
+    *,
+    require_vision: bool = False,
+) -> list[tuple[str, dict]]:
     """Peers por clase de potencia (horizontal entre proveedores) antes de bajar de clase."""
     out: list[tuple[str, dict]] = []
     for power_class in TIER_CLASSES[tier]:
         batch: list[tuple[str, dict]] = []
         for provider in providers:
-            for m in await _models_for_class(pool, provider, power_class, limit_per_provider):
+            for m in await _models_for_class(
+                pool, provider, power_class, limit_per_provider, require_vision=require_vision
+            ):
                 batch.append((provider, m))
         out.extend(order_peer_batch(providers, batch))
     return out

@@ -10,7 +10,8 @@ from fastapi import HTTPException
 
 from app import usage as usage_agg
 from app.deps import err
-from app.llm import router as llm_router
+from app.llm import attachments, router as llm_router
+from app.llm.attachments import NormalizedAttachment
 from app.llm.errors import LLMError
 from app.prompt_render import PromptRenderError, render_template
 
@@ -93,7 +94,20 @@ def _base_fields(user_id, project, access_token_id, tier_requested, prompt: str)
     )
 
 
-async def _invoke_llm(pool, redis, *, project, messages, tier_requested, max_output_tokens, json_schema, base: dict, started: float):
+async def _invoke_llm(
+    pool,
+    redis,
+    *,
+    project,
+    messages,
+    tier_requested,
+    max_output_tokens,
+    json_schema,
+    base: dict,
+    started: float,
+    normalized_attachments: list[NormalizedAttachment] | None = None,
+    task_used: str | None = None,
+):
     try:
         return await llm_router.ask(
             pool,
@@ -103,6 +117,8 @@ async def _invoke_llm(pool, redis, *, project, messages, tier_requested, max_out
             tier=tier_requested,
             max_tokens=max_output_tokens,
             json_schema=json_schema,
+            normalized_attachments=normalized_attachments,
+            task_used=task_used,
         )
     except llm_router.AskFailure as exc:
         latency_err = int((time.monotonic() - started) * 1000)
@@ -147,6 +163,10 @@ def _response_from_res(res: dict, rid: str, latency: int) -> dict:
         out["tier_escalated_from"] = res["tier_escalated_from"]
     if res.get("models_chain"):
         out["models_chain"] = res["models_chain"]
+    if res.get("task_used"):
+        out["task_used"] = res["task_used"]
+    if res.get("attachments_processed") is not None:
+        out["attachments_processed"] = res["attachments_processed"]
     return out
 
 
@@ -199,13 +219,27 @@ async def run_ask(
     messages: list[dict],
     prompt: str,
     json_schema: dict | None = None,
+    normalized_attachments: list[NormalizedAttachment] | None = None,
+    task_used: str | None = None,
 ) -> dict:
     base = _base_fields(user_id, project, access_token_id, tier_requested, prompt)
     started = time.monotonic()
     res = await _invoke_llm(
-        pool, redis, project=project, messages=messages, tier_requested=tier_requested,
-        max_output_tokens=max_output_tokens, json_schema=json_schema, base=base, started=started,
+        pool,
+        redis,
+        project=project,
+        messages=messages,
+        tier_requested=tier_requested,
+        max_output_tokens=max_output_tokens,
+        json_schema=json_schema,
+        base=base,
+        started=started,
+        normalized_attachments=normalized_attachments,
+        task_used=task_used,
     )
+    if normalized_attachments:
+        res["task_used"] = task_used
+        res["attachments_processed"] = attachments.attachments_processed_meta(normalized_attachments)
     return await _finalize_success(pool, project, access_token_id, base, res, started)
 
 
@@ -221,6 +255,8 @@ async def iter_stream_events(
     messages: list[dict],
     prompt: str,
     json_schema: dict | None = None,
+    normalized_attachments: list[NormalizedAttachment] | None = None,
+    task_used: str | None = None,
     chunk_size: int = 64,
 ) -> AsyncIterator[dict]:
     """Una sola llamada LLM; emite deltas y un evento done con metadatos."""
@@ -228,9 +264,21 @@ async def iter_stream_events(
     started = time.monotonic()
     try:
         res = await _invoke_llm(
-            pool, redis, project=project, messages=messages, tier_requested=tier_requested,
-            max_output_tokens=max_output_tokens, json_schema=json_schema, base=base, started=started,
+            pool,
+            redis,
+            project=project,
+            messages=messages,
+            tier_requested=tier_requested,
+            max_output_tokens=max_output_tokens,
+            json_schema=json_schema,
+            base=base,
+            started=started,
+            normalized_attachments=normalized_attachments,
+            task_used=task_used,
         )
+        if normalized_attachments:
+            res["task_used"] = task_used
+            res["attachments_processed"] = attachments.attachments_processed_meta(normalized_attachments)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {"code": "stream_error", "message": str(exc.detail)}
         yield {"type": "error", "code": detail.get("code"), "message": detail.get("message")}
