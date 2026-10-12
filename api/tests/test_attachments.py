@@ -3,18 +3,26 @@ import base64
 import os
 import unittest
 import unittest.mock
-from unittest.mock import AsyncMock
+from io import BytesIO
+from unittest.mock import AsyncMock, patch
 
 os.environ["ASKBOX_MASTER_KEY"] = "00" * 32
 
 from app.llm import attachments, cache, catalog  # noqa: E402
 from app.llm.attachments import (  # noqa: E402
     MAX_ATTACHMENT_BYTES,
+    VISION_MAX_EDGE,
     infer_task,
     normalize_attachments,
+    preprocess_image_for_provider,
     sniff_mime,
     temperature_for_task,
 )
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None  # type: ignore[misc, assignment]
 
 
 def _png_bytes(extra: bytes = b"") -> bytes:
@@ -78,6 +86,55 @@ class AttachmentCacheAndTaskTests(unittest.TestCase):
     def test_temperature_transcribe_zero(self):
         self.assertEqual(temperature_for_task("transcribe"), 0.0)
         self.assertEqual(temperature_for_task("interpret"), 0.4)
+
+
+def _png_image_bytes(width: int, height: int) -> bytes:
+    assert Image is not None
+    img = Image.new("RGB", (width, height), color=(40, 80, 120))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _jpeg_dimensions(data: bytes) -> tuple[int, int]:
+    assert Image is not None
+    with Image.open(BytesIO(data)) as img:
+        return img.size
+
+
+class ImagePreprocessTests(unittest.TestCase):
+    @unittest.skipIf(Image is None, "Pillow no instalado")
+    def test_large_png_becomes_smaller_jpeg_within_max_edge(self):
+        raw = _png_image_bytes(3200, 800)
+        out, mime = preprocess_image_for_provider(raw, "image/png")
+        self.assertEqual(mime, "image/jpeg")
+        w, h = _jpeg_dimensions(out)
+        self.assertLessEqual(max(w, h), VISION_MAX_EDGE)
+        self.assertEqual(max(w, h), VISION_MAX_EDGE)
+
+    @unittest.skipIf(Image is None, "Pillow no instalado")
+    def test_small_image_not_upscaled(self):
+        raw = _png_image_bytes(120, 90)
+        out, mime = preprocess_image_for_provider(raw, "image/png")
+        self.assertEqual(mime, "image/jpeg")
+        w, h = _jpeg_dimensions(out)
+        self.assertEqual((w, h), (120, 90))
+
+    def test_pdf_skips_pillow(self):
+        pdf = b"%PDF-1.4\n1 0 obj\nendobj\n"
+        with patch("PIL.Image.open") as mock_open:
+            out, mime = preprocess_image_for_provider(pdf, "application/pdf")
+        mock_open.assert_not_called()
+        self.assertEqual(out, pdf)
+        self.assertEqual(mime, "application/pdf")
+
+    @unittest.skipIf(Image is None, "Pillow no instalado")
+    def test_normalize_uses_compressed_bytes_for_digest(self):
+        raw = _png_image_bytes(2400, 600)
+        b64 = base64.b64encode(raw).decode()
+        norm = normalize_attachments([{"mime": "image/png", "data_base64": b64}])
+        self.assertEqual(norm[0].mime, "image/jpeg")
+        self.assertLess(norm[0].size, len(raw))
 
 
 class CatalogVisionTests(unittest.IsolatedAsyncioTestCase):

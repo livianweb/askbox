@@ -1,4 +1,10 @@
-"""Adjuntos inline en POST /v1/ask: validación MIME, límites y formato neutro para proveedores."""
+"""Adjuntos inline en POST /v1/ask: validación MIME, límites y formato neutro para proveedores.
+
+Límites y preproceso de imagen (env):
+  ASKBOX_MAX_ATTACHMENTS, ASKBOX_MAX_ATTACHMENT_BYTES, ASKBOX_MAX_ATTACHMENTS_TOTAL_BYTES
+  ASKBOX_VISION_MAX_EDGE (lado mayor máx. antes del proveedor, default 1600)
+  ASKBOX_VISION_JPEG_QUALITY (recompresión JPEG, default 72)
+"""
 from __future__ import annotations
 
 import base64
@@ -40,6 +46,10 @@ def _int_env(name: str, default: int) -> int:
 MAX_ATTACHMENTS = _int_env("ASKBOX_MAX_ATTACHMENTS", 8)
 MAX_ATTACHMENT_BYTES = _int_env("ASKBOX_MAX_ATTACHMENT_BYTES", 5 * 1024 * 1024)
 MAX_ATTACHMENTS_TOTAL_BYTES = _int_env("ASKBOX_MAX_ATTACHMENTS_TOTAL_BYTES", 15 * 1024 * 1024)
+VISION_MAX_EDGE = _int_env("ASKBOX_VISION_MAX_EDGE", 1600)
+VISION_JPEG_QUALITY = _int_env("ASKBOX_VISION_JPEG_QUALITY", 72)
+
+_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/webp"})
 
 
 @dataclass(frozen=True)
@@ -49,6 +59,33 @@ class NormalizedAttachment:
     sha256: str
     size: int
     filename: str | None = None
+
+
+def preprocess_image_for_provider(data: bytes, declared_mime: str) -> tuple[bytes, str]:
+    """RGB, reducir lado mayor si hace falta, JPEG; no agranda. PDF y fallos dejan los bytes originales."""
+    if declared_mime not in _IMAGE_MIMES:
+        return data, declared_mime
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.open(BytesIO(data))
+        img = img.convert("RGB")
+        w, h = img.size
+        max_side = max(1, VISION_MAX_EDGE)
+        if max(w, h) > max_side:
+            scale = max_side / max(w, h)
+            img = img.resize(
+                (max(1, int(w * scale)), max(1, int(h * scale))),
+                Image.Resampling.LANCZOS,
+            )
+        quality = max(1, min(95, VISION_JPEG_QUALITY))
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        return buf.getvalue(), "image/jpeg"
+    except Exception:
+        return data, declared_mime
 
 
 def sniff_mime(data: bytes) -> str | None:
@@ -165,12 +202,13 @@ def normalize_attachments(raw: list[dict] | None) -> list[NormalizedAttachment]:
         filename = item.get("filename")
         if filename is not None:
             filename = str(filename).strip()[:255] or None
+        send_data, send_mime = preprocess_image_for_provider(data, declared)
         out.append(
             NormalizedAttachment(
-                mime=declared,
-                data=data,
-                sha256=hashlib.sha256(data).hexdigest(),
-                size=len(data),
+                mime=send_mime,
+                data=send_data,
+                sha256=hashlib.sha256(send_data).hexdigest(),
+                size=len(send_data),
                 filename=filename,
             )
         )
