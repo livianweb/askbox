@@ -4,7 +4,7 @@ import json
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app import ask_exec, ratelimit
 from app.llm import attachments
@@ -16,9 +16,24 @@ router = APIRouter(prefix="/v1", tags=["ask"])
 
 
 class AskAttachmentIn(BaseModel):
-    mime: str = Field(..., max_length=128)
-    data_base64: str = Field(..., max_length=30_000_000)
-    filename: str | None = Field(default=None, max_length=255)
+    mime: str = Field(
+        ...,
+        max_length=128,
+        description=(
+            "Tipo MIME declarado. Solo se aceptan image/png, image/jpeg, image/webp y application/pdf; "
+            "el servidor valida el contenido (sniff) y rechaza si no coincide."
+        ),
+    )
+    data_base64: str = Field(
+        ...,
+        max_length=30_000_000,
+        description="Contenido del archivo en base64 (sin prefijo data:). No se persiste en el servidor.",
+    )
+    filename: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Nombre opcional para trazas y metadatos de respuesta; no afecta al proveedor.",
+    )
 
 
 class AskIn(BaseModel):
@@ -32,12 +47,24 @@ class AskIn(BaseModel):
     json_schema: dict | None = Field(default=None, description="Si se envía, tier=auto lo considera y valida la respuesta JSON.")
     attachments: list[AskAttachmentIn] | None = Field(
         default=None,
-        description="Adjuntos inline (imagen o PDF); no se almacenan en servidor.",
+        description=(
+            "Adjuntos multimodales inline. Sin este campo el contrato es el de solo texto. "
+            "Límites (variables de entorno, defaults entre paréntesis): "
+            "ASKBOX_MAX_ATTACHMENTS (8), ASKBOX_MAX_ATTACHMENT_BYTES (5 MiB por archivo), "
+            "ASKBOX_MAX_ATTACHMENTS_TOTAL_BYTES (15 MiB en total). "
+            "Las imágenes se recomprimen a JPEG (RGB) antes del proveedor: lado mayor ≤ ASKBOX_VISION_MAX_EDGE (1600), "
+            "calidad ASKBOX_VISION_JPEG_QUALITY (72); no se agrandan. Los PDF no se recomprimen. "
+            "Con adjuntos, el catálogo solo elige modelos con supports_vision (Gemini y OpenRouter según prioridad y claves). "
+            "Gemini usa inline_data; OpenRouter, image_url. Los PDF solo los admite Gemini (OpenRouter falla y pasa al siguiente peer)."
+        ),
     )
     task: str | None = Field(
         default=None,
         pattern="^(transcribe|extract|interpret)$",
-        description="Tarea con adjuntos: transcribe | extract | interpret.",
+        description=(
+            "Solo con adjuntos. transcribe: texto literal; extract: datos estructurados; interpret: descripción o razonamiento. "
+            "Si se omite, se infiere del prompt (y de json_schema en extract)."
+        ),
     )
 
     @model_validator(mode="after")
@@ -49,6 +76,43 @@ class AskIn(BaseModel):
         if not has_raw and not has_tpl:
             raise ValueError("Indica prompt o prompt_template.")
         return self
+
+
+class AskAttachmentProcessedOut(BaseModel):
+    mime: str = Field(description="MIME enviado al proveedor (p. ej. image/jpeg tras preproceso).")
+    size_bytes: int = Field(description="Tamaño en bytes tras preproceso (base de caché y digest).")
+    filename: str | None = Field(default=None, description="Nombre enviado en la petición, si lo hubo.")
+
+
+class AskOut(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    request_id: str
+    text: str
+    provider: str
+    model_used: str
+    tier_used: str
+    cache_hit: bool
+    latency_ms: int
+    input_tokens: int = 0
+    output_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    tier_escalated_from: str | None = Field(
+        default=None,
+        description="Presente si tier=auto escaló una vez por fallo de cascada.",
+    )
+    models_chain: list[str] | None = Field(
+        default=None,
+        description="Modelos/proveedores probados en la cascada (etiquetas provider:model).",
+    )
+    task_used: str | None = Field(
+        default=None,
+        description="Tarea aplicada a los adjuntos (transcribe, extract o interpret). Solo si hubo adjuntos.",
+    )
+    attachments_processed: list[AskAttachmentProcessedOut] | None = Field(
+        default=None,
+        description="Metadatos por adjunto tras validación y preproceso. Solo si hubo adjuntos.",
+    )
 
 
 async def _prepare_ask(pool, redis, auth: AskAuth, body: AskIn) -> tuple:
@@ -100,7 +164,16 @@ async def _prepare_ask(pool, redis, auth: AskAuth, body: AskIn) -> tuple:
     return project, messages, prompt, normalized, task_used
 
 
-@router.post("/ask")
+@router.post(
+    "/ask",
+    response_model=AskOut,
+    summary="Completar prompt (texto o multimodal)",
+    description=(
+        "Auth: cookie de sesión o `Authorization: Bearer ab_live_…` (scope ask:read). "
+        "Cuerpo: `prompt` o `prompt_template` + `variables`, más tier, tokens y opcionalmente adjuntos. "
+        "Los adjuntos no se guardan; la caché Redis incluye un digest de los bytes enviados al proveedor."
+    ),
+)
 async def ask(body: AskIn, request: Request, auth: AskAuth = Depends(ask_auth)):
     pool, redis = request.app.state.pool, request.app.state.redis
     project, messages, prompt, normalized, task_used = await _prepare_ask(pool, redis, auth, body)
@@ -124,7 +197,14 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-@router.post("/ask/stream")
+@router.post(
+    "/ask/stream",
+    summary="Completar prompt con SSE",
+    description=(
+        "Mismo cuerpo y reglas de adjuntos que POST /v1/ask. "
+        "Respuesta text/event-stream: eventos `delta` (text) y `done` (metadatos, incl. task_used y attachments_processed si aplica)."
+    ),
+)
 async def ask_stream(body: AskIn, request: Request, auth: AskAuth = Depends(ask_auth)):
     pool, redis = request.app.state.pool, request.app.state.redis
     project, messages, prompt, normalized, task_used = await _prepare_ask(pool, redis, auth, body)
