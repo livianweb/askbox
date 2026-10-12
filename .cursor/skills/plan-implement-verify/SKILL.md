@@ -9,100 +9,94 @@ Plantilla reutilizable: copia este skill a `.cursor/skills/` en tu proyecto y en
 
 ## Objetivo
 
-Clasificar cada tarea en vía **plan** o vía **directa** antes de tocar código; cerrar diseño con un **Task planificador** cuando corresponda; delegar implementación; verificar con build/tests. El **padre en Auto** orquesta todo **sin** pedir aprobación del plan al usuario.
+Clasificar cada tarea en vía **plan** o vía **directa** antes de tocar código; cerrar diseño con el **modo de planificación más barato** que baste; delegar implementación en Tasks **`balanced`** pequeños; verificar con build/tests. El **padre en Auto** orquesta todo **sin** pedir aprobación del plan al usuario.
 
-**Modelos:** el usuario **no** elige modelo ni especialidad. Para **UI/visual** y **copy/docs**, si está instalado `askbox-first`, el padre usa primero **askbox** (`POST /v1/ask`) y solo entonces Cursor. En el resto, y en **fallback** de askbox, asigna **tipo de tarea → nivel → slug** con `available_subagent_models` (`auto-orchestrator.mdc` § «Elección de modelo») — misma heurística que sin askbox, incluidas especialidades visual/escritura en UI/copy cuando estén en catálogo. **Ahorro:** askbox-first en UI/copy; Composer como preferencia dentro de esa heurística, no como único destino del fallback; escalar a `strong`/`strong-thinking` solo cuando la complejidad lo exige.
+**Modelos y coste:** el padre y cada `Task` consumen plan Cursor. Ver `auto-orchestrator.mdc` § «Presupuesto de consumo». Resumen:
+
+- **UI/copy** → `askbox-first` si está instalado; sin `ASKBOX_*`, fallback **Composer `balanced`**, no especialidades caras por defecto.
+- **Plan** → modo A (cabeza) > B (Task medio/Grok) > C (Opus/thinking justificado).
+- **Implement / verify** → **`balanced`** o **`fast`** (Composer/Grok); **nunca** Opus para codificar o correr tests.
+- Elegir **slug explícito** en cada Task; evitar `inherit` ciego.
 
 ## Flujo por defecto
 
-0. **Decidir** — el padre clasifica la tarea en vía **plan** o vía **directa** (ver Fase 0).
-1. **Plan** (solo vía plan) — subagente `Task` planificador **antes** de escribir código de producto.
-1b. **Directo** (solo vía directa) — sin Task planificador dedicado; plan en cabeza y a implementar.
-2. **Implement** — uno o más `Task` con ownership disjunto; paralelo si no hay dependencia.
-3. **Verify** — build, health, tests, checks de secretos/convenciones según lo tocado.
+0. **Decidir** — plan vs. directo y modo de plan **A | B | C** (ver Fase 0).
+1. **Plan** (solo vía plan, modos B o C) — Task planificador **antes** de código de producto; entregable = **lista de tareas pequeñas** para `balanced`.
+1b. **Directo** (modo A) — plan en cabeza; implement sin planificador dedicado.
+2. **Implement** — uno o más `Task` **`balanced`** con ownership disjunto; paralelo si no hay dependencia.
+3. **Verify** — padre o Task **`fast`**; build, health, tests.
 
-Al terminar el plan: el padre **continúa solo** a implementación; no hay paso de "espera OK" ni revisión humana obligatoria del plan.
+Al terminar el plan: el padre **continúa solo** a implementación; no hay paso de "espera OK".
 
 ## Niveles de capacidad (referencia)
 
 | Nivel | Uso |
 |-------|-----|
-| **`fast`** | Explore, búsquedas, checks puntuales, status |
-| **`balanced`** | Implementación mecánica, migraciones, boilerplate, tests; fallback UI/docs |
-| **`strong`** | Plan feature media, diseño API/DB/auth |
-| **`strong-thinking`** | Plan greenfield/alta complejidad, seguridad, multi-tenant, integraciones externas, review de alto riesgo |
+| **`fast`** | Explore, búsquedas, checks, verify ligero |
+| **`balanced`** | Implementación, migraciones, tests; planificador modo B |
+| **`strong`** | Plan modo B si hace falta más capacidad que `balanced`; resolver a slug **medio** (Grok), no Opus |
+| **`strong-thinking`** | Plan modo C, Bugbot/security-review explícito |
 
 ## Fase 0 — Decidir: plan o directo
 
-El padre clasifica la tarea **antes** de tocar código (criterio completo en `auto-orchestrator.mdc` § "Plan vs. directo"):
+Criterio completo en `auto-orchestrator.mdc` § «Plan vs. directo» y «Planificación: tres modos»:
 
-- **Vía plan** → greenfield, varias capas (API+BD+auth+UI), arquitectura/seguridad/multi-tenant/integraciones externas, alcance ambiguo o >~1 día, contratos públicos o migraciones no triviales.
-- **Vía directa** → bugfix acotado, spec ya cerrada con paths claros, un solo módulo sin diseño abierto, o follow-up mecánico de un plan ya ejecutado en la conversación.
-- **Regla dura:** si hay duda, **planificar** (rehacer sale más caro que un plan corto).
-- El padre **anuncia** la decisión (`plan` | `directo`) y, por cada subfase o subagente, **vía** (`askbox` | `Cursor`) + **tipo de tarea**; si es Cursor, **nivel + slug** (y excepción fuera de Composer si aplica). Ver `askbox-first` para el formato. **No** pedir opinión al usuario sobre modelos.
+- **Directo / modo A** → bugfix, spec cerrada, un módulo, follow-up, o diseño obvio tras lectura rápida.
+- **Plan modo B** → varias capas, contrato/migración acotada, coordinación multi-archivo **sin** señales de complejidad alta.
+- **Plan modo C** → multi-tenant, seguridad crítica, routing LLM, greenfield grande, varios servicios.
+- **Regla dura:** duda de diseño → **explore `fast`** + plan en cabeza (A); **no** abrir planificador Opus por precaución.
+- **Anunciar:** `plan`|`directo`, modo **A|B|C** si plan, **vía**, **tipo**, **nivel + slug + por qué no Opus** en cada Task Cursor.
 
-## Fase 1 — Plan (Task planificador, no el padre entero)
+## Fase 1 — Plan (Task planificador, modos B y C)
 
-**Solo si la Fase 0 eligió la vía plan.** El padre lanza un **único Task planificador** (o explore + planificador en serie si hace falta contexto) con:
+**Solo si la Fase 0 exige Task planificador** (no modo A).
 
-- Investigación del código existente y restricciones del repo (convenciones, módulos sensibles, contratos ya publicados).
-- Entregable: alcance, archivos a tocar, contratos (API, esquema), migraciones, riesgos, tareas **independientes** para implementadores.
-- **Sin código de producto** en esta fase salvo borradores (SQL, OpenAPI) si acotan el diseño.
+- Opcional previo: **`explore` `fast`** (padre resume al planificador; no duplicar explore caro).
+- Entregable: alcance, archivos, contratos, migraciones, riesgos, **tareas independientes acotadas** (cada una implementable en `balanced`).
+- **Sin código de producto** salvo borradores (SQL, OpenAPI) que acoten diseño.
 
-### Complejidad → nivel del planificador (solo el padre elige)
+### Complejidad → modo y nivel del planificador
 
-| Complejidad | Ejemplos | Nivel |
-|-------------|----------|-------|
-| **Baja** | CRUD simple, stub, documentación | **`balanced`** (o **`fast`** si trivial y plan mínimo) |
-| **Media** | API + DB + auth, coordinación multi-archivo | **`strong`** |
-| **Alta** | Multi-tenant, integraciones externas, seguridad, varios servicios | **`strong-thinking`** |
+| Complejidad | Ejemplos | Modo | Nivel + slug |
+|-------------|----------|------|----------------|
+| **Baja** | CRUD, stub, docs | Preferir **A** (sin Task) | Si Task: **`balanced`** → Composer/Grok |
+| **Media** | API + DB + auth, multi-archivo | **B** | **`balanced`** o **`strong`** → **Grok** / medio; anunciar por qué no Opus |
+| **Alta** | Multi-tenant, LLM routing, seguridad | **C** | **`strong-thinking`** → Opus/thinking + justificación de una línea |
 
-**Señales de complejidad:** número de servicios/capas afectados; auth y permisos; cifrado y secretos; multi-tenant; integraciones externas; greenfield frente a cambio puntual.
+Tras elegir nivel, **slug explícito** en `available_subagent_models`. **Prohibido** Opus para plan «media» estándar.
 
-Tras elegir el nivel, el padre **resuelve el slug** contra `available_subagent_models` y **informa**: tipo de tarea (planificador), nivel, slug (+ excepción si no es Composer). Igual para cada Task posterior.
+## Fase 1b — Directo (modo A)
 
-## Fase 1b — Directo (sin Task planificador dedicado)
-
-**Solo si la Fase 0 eligió la vía directa.** No hay Task planificador separado:
-
-- El padre arma el plan mentalmente (unas líneas, sin entregable formal) usando el contexto ya disponible en la conversación.
-- Para cambios realmente triviales y de un solo archivo, el padre puede **implementar él mismo** sin lanzar Task.
-- Para el resto, el padre lanza un **único Task implement** (nivel `balanced`; `strong` si el cambio, aun acotado, exige coordinar varios archivos con cuidado) con la spec ya cerrada: archivo(s), cambio esperado, cómo probar.
-- Se salta el entregable de diseño de la Fase 1, pero **no** se salta Verify (Fase 3).
-- Si durante la implementación directa aparece ambigüedad de diseño no prevista, el padre **escala a la vía plan** (Fase 1) en vez de improvisar arquitectura sobre la marcha.
+- Plan mental breve; implement **`balanced`** o padre si trivial y un archivo.
+- Task implement único con spec cerrada; nivel **`balanced`** (subir a `strong`+medio solo si varios archivos delicados, **sin** Opus).
+- Si aparece ambigüedad de arquitectura → escalar a plan modo B, no improvisar.
 
 ## Fase 2 — Implement (subagentes)
 
-- Un subagente por tarea acotada; prompt con rutas absolutas bajo la raíz del repo.
-- Incluir las reglas locales de **tu** proyecto (convenciones de arquitectura, dónde van las llamadas a servicios externos, dónde no hay que poner secretos, etc. — ver tu propia rule de convenciones).
-- **Paralelo** solo con allowlists **disjuntas**; no un solo Task "haz todo el repo".
-- Entregable del subagente: diff resumido, rutas, cómo probar — no volcado masivo.
+- **Un Task por tarea acotada** del plan; prompts con rutas absolutas y allowlist.
+- Nivel por defecto: **`balanced`** + Composer o Grok.
+- **Paralelo** solo con allowlists disjuntas.
+- Entregable: diff resumido, rutas, cómo probar.
 
 ### Tipo de trabajo → nivel y subagente
-
-El padre elige **subagente** (`explore`, `generalPurpose`, `bugbot`, etc.) y **nivel** según el tipo; luego **slug** en catálogo (`auto-orchestrator.mdc`):
 
 | Tipo de tarea | Nivel | Subagente |
 |---------------|-------|-----------|
 | Implementación según plan | **`balanced`** | `generalPurpose` |
 | Tests, migraciones, boilerplate | **`balanced`** | `generalPurpose` |
-| UI, maquetación, frontend visual | **askbox-first** (`askbox-first`); fallback: visual o **`balanced`** | `generalPurpose` (tras propuesta askbox o si fallback) |
-| Docs, redacción, changelogs | **askbox-first**; fallback: escritura o **`balanced`** | `generalPurpose` (idem) |
-| Búsqueda / mapa de estructura | **`fast`** | `explore` |
-| Lecturas largas / muchos ficheros | **`fast`** | `explore` |
-| Revisión crítica (usuario pide review) | **`strong-thinking`** | `bugbot` / `security-review` |
-| Verificación rápida de comandos | **`fast`** | `generalPurpose` |
+| UI, maquetación | **askbox-first**; fallback Composer **`balanced`** | `generalPurpose` |
+| Docs, copy | **askbox-first**; fallback Composer **`fast`/`balanced`** | `generalPurpose` |
+| Búsqueda / mapa | **`fast`** | `explore` |
+| Revisión crítica (usuario pide) | **`strong-thinking`** | `bugbot` / `security-review` |
+| Verify rápido de comandos | **`fast`** o padre | — |
 
-Al usar askbox: anunciar **Askbox-first — tipo — tier**; al lanzar cada Task Cursor (incluido fallback askbox): **Cursor — tipo + nivel + slug**; marcar excepción fuera de Composer cuando el slug elegido por la heurística no sea Composer (especialidad visual/escritura, `strong*`, etc.).
+Anunciar en cada Task: **Cursor — tipo — nivel — slug — por qué no Opus**.
 
 ### Ownership y paralelismo
 
-- Siempre `.cursor/rules/multitask-ownership.mdc` (`alwaysApply`).
-- Cada Task: **allowlist** de escritura y **denylist**; sin solapar paths entre Tasks paralelos.
-- Mismo archivo o módulo → serie o un agente; ficheros "calientes" (compose, `.env*`, entrypoints) → un solo agente.
-- Tras paralelo: el padre comprueba solapes antes de verify.
-
-El padre **delega** implementación; evita editar el mismo árbol que un Task activo salvo integración mínima.
+- Siempre `.cursor/rules/multitask-ownership.mdc`.
+- Tras paralelo: comprobar solapes antes de verify.
+- El padre delega; no editar el mismo árbol que un Task activo salvo integración mínima.
 
 ## Fase 3 — Verify (obligatorio, adaptar a tu proyecto)
 
@@ -116,7 +110,7 @@ Desde la raíz del repositorio, ejecutar lo que aplique:
 
 **Esta fase es un placeholder**: cada proyecto debe rellenar sus comandos reales en su propia rule de convenciones o en este mismo archivo tras instalarlo.
 
-Si algo falla, corregir (delegar o padre) antes de dar por cerrado.
+Verify lo ejecuta el **padre** o un Task **`fast`**; no lanzar Opus para «ver si compila». Si algo falla, corregir con Task **`balanced`** o padre antes de cerrar.
 
 ## Fase 4 — Git autopilot (si `git-autopilot` está instalado)
 
@@ -128,10 +122,12 @@ confundir con la Fase 3: primero build/tests/health en verde, **luego** commit/p
 ## Hábitos que ahorran tokens
 
 - Los subagentes **no** ven el chat del usuario: repetir solo contexto necesario.
-- Investigar/planificar una vez; pasar **resumen** a Tasks de implementación.
-- Varios `Task` en un turno cuando las tareas sean independientes y las allowlists no se solapen.
+- Investigar/planificar **una vez** (`explore` fast); pasar **resumen** a Tasks `balanced`.
+- **Partir** el plan en N Tasks pequeños en lugar de un «implementa todo» en `strong`.
+- Varios `Task` en un turno cuando sean independientes y las allowlists no se solapen.
+- UI/copy: **askbox** antes que Cursor de pago.
 
 ## Comunicación
 
-- Resumen final en el idioma acordado con el usuario: qué se hizo, decisión (`plan`|`directo`), qué bloques usaron **askbox** vs **Cursor** (tipo + nivel + slug si Cursor), cómo probar, pendientes.
-- **No** solicitar aprobación del plan intermedio ni **consultar** qué modelo prefiere el usuario.
+- Resumen final: qué se hizo, `plan`|`directo`, modo **A|B|C**, bloques **askbox** vs **Cursor** (tipo + nivel + slug + por qué no Opus), cómo probar, pendientes.
+- **No** pedir aprobación del plan ni consultar modelo al usuario.

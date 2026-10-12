@@ -48,7 +48,7 @@ El agente **no** guarda tokens en skills ni en git. Configuración solo por **va
 
 | Variable | Uso |
 |----------|-----|
-| `ASKBOX_API_URL` | Base de la API, sin barra final. Ejemplos: `http://127.0.0.1:8066`, `https://askbox.softportweb.com/api` (si el proxy público expone la API bajo `/api`). |
+| `ASKBOX_API_URL` | Base de la API de **tu** instancia askbox, sin barra final. Ejemplos: `https://askbox.cliente.com/api`, `http://192.168.x.x:8066` (LAN). No hay un host único global — configúralo por cliente/entorno. |
 | `ASKBOX_ACCESS_TOKEN` | Bearer de proyecto: prefijo `ab_live_…`, scope `ask:read`. Crear en la UI de askbox (`/projects` → tokens) o vía API; **nunca** commitear ni pegar en el chat. |
 
 Alternativa solo en desarrollo local con sesión de usuario: cookie de login en `curl -b` — preferir token de proyecto para scripts del agente.
@@ -120,9 +120,9 @@ En fallback, **no** enviar todo a Composer genérico: **retomar el flujo Auto** 
 
 1. Clasificar **tipo de tarea** y asignar **nivel** (`fast` / `balanced` / `strong` / `strong-thinking`) como en cualquier otro Task.
 2. Consultar **`available_subagent_models`** y elegir el **mejor slug** para ese tipo y nivel.
-3. **UI / maquetación / visual** → especialidad **visual** del catálogo si existe (p. ej. variantes flash-high); si no, **`balanced`** con Composer u homólogo del catálogo.
-4. **Copy / docs / legibilidad** → especialidad **escritura** del catálogo si existe; si no, **`fast`** o **`balanced`** con Composer según alcance del texto.
-5. **Composer** solo como **preferencia de ahorro dentro** de esa heurística (explore, implementación mecánica, etc.), no en lugar de especialidades cuando el tipo de tarea las pide y están en catálogo.
+3. **UI / maquetación / visual** → **`balanced` + Composer** (o Grok medio) **primero**; especialidad visual cara solo si el encargo lo exige y askbox ya falló.
+4. **Copy / docs / legibilidad** → **`fast`/`balanced` + Composer**; especialidad escritura solo si textos largos y Composer no basta.
+5. **Composer / Grok** como destino habitual del fallback; especialidades caras son **excepción** anunciada, no sustituto de configurar `ASKBOX_*`.
 
 Anunciar explícitamente el cambio de vía (ver abajo).
 
@@ -135,7 +135,7 @@ En el primer uso de askbox en un turno o subfase:
 
 Al lanzar subagente Cursor (incluido fallback):
 
-- **Vía Cursor:** `Cursor — <tipo de tarea> — <nivel> — <slug>` (+ excepción fuera de Composer si aplica)
+- **Vía Cursor:** `Cursor — <tipo de tarea> — <nivel> — <slug> — <por qué no Opus>` (+ excepción fuera de Composer si aplica)
 
 En el resumen final, listar qué bloques salieron de askbox y qué de Cursor.
 
