@@ -1,9 +1,9 @@
 ---
 name: askbox-first
-description: Para maquetación/UI/visual y copy/docs/legibilidad, usar primero el gateway askbox (POST /v1/ask) con tiers gratuitos del keypool; si falla, no aprueba o se agotan modelos, fallback a subagentes Cursor con la heurística normal del orquestador (tipo → nivel → slug), no Composer genérico por defecto.
+description: Para UI/visual, textos (copy/docs/legibilidad), Q&A, borradores e ideas — usar primero el gateway askbox (POST /v1/ask) con tiers del keypool; Cursor queda para implementación en repo, explore con tools, plan C, verify con shell; fallback a subagentes Cursor con heurística normal si falla, no aprueba o se agotan modelos.
 ---
 
-# Askbox-first (UI y copy antes que Cursor de pago)
+# Askbox-first (LLM barato antes que Cursor de pago)
 
 ## Alcance: solo capa A (LLM)
 
@@ -22,12 +22,17 @@ despliegue askbox (que, si se usa, es por repo montado, no «git global de todas
 
 ## Objetivo
 
-Ahorrar coste de subagentes Cursor en tareas donde **askbox** (gateway LLM con keypool y tiers) suele dar buenos resultados:
+Ahorrar coste de subagentes Cursor en tareas donde **askbox** (gateway LLM con keypool y tiers) suele dar buenos resultados **sin herramientas de repo ni shell**:
 
-1. **Maquetación, temas visuales, ayuda al desarrollo UI** (CSS, layout, componentes, accesibilidad visual, copy de micro-UI).
-2. **Mejora de textos, legibilidad y documentación** (README, changelogs, mensajes de error, tooltips, comentarios de alto nivel en docs).
+| Etiqueta mental | Qué incluye |
+|-----------------|-------------|
+| **UI** | Maquetación, temas visuales, CSS/layout, componentes, accesibilidad visual, micro-copy de interfaz |
+| **copy** | Strings, mensajes de error, tooltips, tono de marca, microtextos |
+| **docs** | README, changelogs, comentarios de documentación, ayuda de usuario |
+| **qa** | Respuestas a preguntas del usuario, explicaciones conceptuales, comparativas, «cómo funciona X» (con contexto acotado en el prompt) |
+| **draft** | Borradores, ideas, listas, resúmenes, esquemas de texto, propuestas de párrafos antes de tocar archivos |
 
-Para el resto (explore, backend, arquitectura, seguridad, implementación mecánica de lógica), **no** usar askbox por defecto: seguir `auto-orchestrator.mdc` y subagentes Cursor.
+**Cursor (Grok/Composer/etc.)** sigue siendo la vía para: **implementación en repo** (código, migraciones, tests), **`explore` con tools**, **plan complejo modo C**, **verify con shell** (build, pytest, scripts), y **fallback** si askbox falla, se agota o el resultado no se aprueba.
 
 ## Cuándo usar askbox primero
 
@@ -37,10 +42,17 @@ Para el resto (explore, backend, arquitectura, seguridad, implementación mecán
 | Revisión visual / consistencia de UI (sin tocar lógica de negocio) | Sí | `balanced` |
 | Redacción o mejora de párrafos (docs, ayuda, strings de UI) | Sí | `fast` o `balanced` |
 | Changelog, README, comentarios de documentación | Sí | `fast` |
-| Refactor grande multi-capa, API, BD, tests, explore de repo | No | Cursor (`fast`/`balanced`/…) |
+| **Pregunta del usuario** (explicación, recomendación, pros/contras) sin editar repo | Sí | `fast` o `balanced` |
+| **Resumen**, lista de ideas, borrador de email/post/spec en texto | Sí | `fast` |
+| **Legibilidad** o reescritura de un fragmento que el padre pegará en el prompt | Sí | `fast` |
+| Refactor grande multi-capa, API, BD, tests | No | Cursor (`balanced`/…) |
+| **Explore** del codebase (grep, árbol, muchos archivos) | No | Cursor `explore` `fast` |
 | Plan de arquitectura, seguridad, review Bugbot | No | Cursor `strong*` |
+| Verify (build, tests, docker) | No | Padre o Cursor `fast` |
 
-Si la tarea mezcla UI/copy con código de producto, el padre puede: (a) pedir a askbox solo el bloque visual o el texto, e implementar el código con Cursor; o (b) ir directo a Cursor si el diff toca muchos archivos de lógica.
+Si la tarea mezcla **texto/UI** con **código de producto**, el padre puede: (a) pedir a askbox solo el bloque textual o visual e **implementar** el código con Cursor; (b) responder la parte **qa/draft** con askbox y delegar el diff a Cursor; o (c) ir directo a Cursor si el encargo exige muchas lecturas de repo o un diff grande de lógica.
+
+**Regla de presupuesto:** con `ASKBOX_*` configurados, **no** lanzar subagente Cursor solo para Q&A o redacción que cabe en un `POST /v1/ask` — el padre puede llamar askbox **en su turno** sin Task.
 
 ## Requisitos del entorno (sin secretos en el repo)
 
@@ -97,31 +109,32 @@ No registrar en logs el valor de `ASKBOX_ACCESS_TOKEN` ni el prompt completo en 
 
 ## Criterio de aprobación del resultado
 
-Antes de aplicar el texto/estilos al repo, el **padre** valida brevemente:
+Antes de **mostrar al usuario** o **aplicar** texto/estilos al repo, el **padre** valida brevemente:
 
-1. **Utilidad:** responde al encargo (UI coherente con el stack del proyecto, copy en el idioma acordado).
-2. **Seguridad:** la salida no introduce secretos ni instrucciones peligrosas.
-3. **Encaje técnico:** CSS/componentes compatibles con el framework del repo (React/Next, etc.); si askbox inventa APIs inexistentes, corregir en implementación Cursor o rechazar y reintentar con prompt más contexto.
+1. **Utilidad:** responde al encargo (respuesta completa en **qa**, copy en idioma acordado, UI coherente con el stack si aplica).
+2. **Veracidad razonable:** en **qa**, no afirmar detalles de código no incluidos en el prompt; si falta contexto, decirlo o pedir un fragmento antes de inventar APIs.
+3. **Seguridad:** la salida no introduce secretos ni instrucciones peligrosas.
+4. **Encaje técnico** (solo si hay código/CSS en la salida): compatible con el framework del repo; si askbox inventa APIs inexistentes, corregir en implementación Cursor o rechazar y reintentar con más contexto.
 
-**Aprobación humana:** si el usuario rechaza el resultado en el turno («no me gusta», «otro tono»), **no** reintentar askbox en bucle: máximo **una** repetición con prompt ajustado; luego **fallback Cursor**.
+**Aprobación humana:** si el usuario rechaza el resultado («no me gusta», «otro tono», «incorrecto»), **no** reintentar askbox en bucle: máximo **una** repetición con prompt ajustado; luego **fallback Cursor**.
 
 Si askbox devuelve vacío, basura, o JSON de error → fallback inmediato.
 
 ## Fallback a Cursor
 
-Usar subagentes Cursor (`Task` / trabajo del padre) cuando ocurra **cualquiera** de:
+Usar subagentes Cursor (`Task` / trabajo del padre con tools) cuando ocurra **cualquiera** de:
 
 - `ASKBOX_API_URL` o `ASKBOX_ACCESS_TOKEN` no configurados.
 - HTTP `429`, `502`, timeouts, o mensaje de modelos/claves agotadas.
 - Resultado no aprobado tras el reintento permitido.
-- La tarea requiere **editar archivos** con ownership y verify: askbox solo **genera** propuestas; la escritura en disco sigue siendo Cursor (salvo que el padre aplique un diff pequeño él mismo).
+- La tarea requiere **explorar el repo**, **ejecutar comandos** o **editar archivos** con ownership y verify: askbox solo **genera** texto; la escritura en disco y el verify siguen siendo Cursor (salvo diff mínimo que el padre aplique él mismo).
 
 En fallback, **no** enviar todo a Composer genérico: **retomar el flujo Auto** como si askbox no hubiera sido opción — misma heurística que `auto-orchestrator.mdc` y `plan-implement-verify`:
 
-1. Clasificar **tipo de tarea** y asignar **nivel** (`fast` / `balanced` / `strong` / `strong-thinking`) como en cualquier otro Task.
+1. Clasificar **tipo de tarea** y asignar **nivel** (`fast` / `balanced` / `strong` / `strong-thinking`).
 2. Consultar **`available_subagent_models`** y elegir el **mejor slug** para ese tipo y nivel.
 3. **UI / maquetación / visual** → **`balanced` + Composer** (o Grok medio) **primero**; especialidad visual cara solo si el encargo lo exige y askbox ya falló.
-4. **Copy / docs / legibilidad** → **`fast`/`balanced` + Composer**; especialidad escritura solo si textos largos y Composer no basta.
+4. **copy / docs / qa / draft** → **`fast`/`balanced` + Composer**; especialidad escritura solo si textos muy largos y Composer no basta.
 5. **Composer / Grok** como destino habitual del fallback; especialidades caras son **excepción** anunciada, no sustituto de configurar `ASKBOX_*`.
 
 Anunciar explícitamente el cambio de vía (ver abajo).
@@ -130,7 +143,7 @@ Anunciar explícitamente el cambio de vía (ver abajo).
 
 En el primer uso de askbox en un turno o subfase:
 
-- **Vía askbox:** `Askbox-first — <tipo: UI|copy|docs> — tier <fast|balanced|auto> — endpoint configurado sí/no`
+- **Vía askbox:** `Askbox-first — <tipo: UI|copy|docs|qa|draft> — tier <fast|balanced|auto> — endpoint configurado sí/no`
 - Tras respuesta: `Askbox — <ok|fallback> — <motivo breve si fallback>`
 
 Al lanzar subagente Cursor (incluido fallback):

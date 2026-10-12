@@ -13,7 +13,7 @@ Clasificar cada tarea en vía **plan** o vía **directa** antes de tocar código
 
 **Modelos y coste:** el padre y cada `Task` consumen plan Cursor. Ver `auto-orchestrator.mdc` § «Presupuesto de consumo». Resumen:
 
-- **UI/copy** → `askbox-first` si está instalado; sin `ASKBOX_*`, fallback **Composer `balanced`**, no especialidades caras por defecto.
+- **UI / copy / docs / qa / draft** → `askbox-first` si está instalado (padre puede llamar askbox sin Task); sin `ASKBOX_*`, fallback **Composer `fast`/`balanced`**, no especialidades caras por defecto.
 - **Plan** → modo A (cabeza) > B (Task medio/Grok) > C (Opus/thinking justificado).
 - **Implement / verify** → **`balanced`** o **`fast`** (Composer/Grok); **nunca** Opus para codificar o correr tests.
 - Elegir **slug explícito** en cada Task; evitar `inherit` ciego.
@@ -85,7 +85,7 @@ Tras elegir nivel, **slug explícito** en `available_subagent_models`. **Prohibi
 | Implementación según plan | **`balanced`** | `generalPurpose` |
 | Tests, migraciones, boilerplate | **`balanced`** | `generalPurpose` |
 | UI, maquetación | **askbox-first**; fallback Composer **`balanced`** | `generalPurpose` |
-| Docs, copy | **askbox-first**; fallback Composer **`fast`/`balanced`** | `generalPurpose` |
+| Docs, copy, qa, draft | **askbox-first**; fallback Composer **`fast`/`balanced`** | padre o `generalPurpose` |
 | Búsqueda / mapa | **`fast`** | `explore` |
 | Revisión crítica (usuario pide) | **`strong-thinking`** | `bugbot` / `security-review` |
 | Verify rápido de comandos | **`fast`** o padre | — |
@@ -125,7 +125,7 @@ confundir con la Fase 3: primero build/tests/health en verde, **luego** commit/p
 - Investigar/planificar **una vez** (`explore` fast); pasar **resumen** a Tasks `balanced`.
 - **Partir** el plan en N Tasks pequeños en lugar de un «implementa todo» en `strong`.
 - Varios `Task` en un turno cuando sean independientes y las allowlists no se solapen.
-- UI/copy: **askbox** antes que Cursor de pago.
+- UI, textos, Q&A y borradores: **askbox** antes que Task Cursor de pago.
 
 ## Comunicación
 

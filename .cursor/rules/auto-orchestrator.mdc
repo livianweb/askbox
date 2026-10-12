@@ -20,21 +20,25 @@ En Cursor Multitask **cada turno del padre** y **cada `Task` subagente** consume
 1. **Task planificador** en `strong`/`strong-thinking` resuelto a Claude Opus, GPT thinking u homólogos — innecesario para la mayoría de features.
 2. **«Si hay duda → planificar»** interpretado como «siempre Task planificador caro» en vez de plan en cabeza o `explore` `fast`.
 3. **Implementación** en `balanced` con slug **`inherit`** o sin elegir slug explícito → a menudo cae en modelos caros del padre.
-4. **UI/copy** sin `ASKBOX_*` → fallback a especialidades Cursor (flash, etc.) en lugar de askbox o Composer `balanced`.
+4. **UI / copy / docs / qa / draft** con `ASKBOX_*` ignorados → lanzar Tasks Cursor para texto o preguntas que cabrían en `POST /v1/ask` (desperdicio); sin `ASKBOX_*` → fallback a especialidades caras en lugar de Composer `balanced`.
 5. **Un solo Task grande** en vez de varios Tasks pequeños nivel `balanced`.
 
 **Política:** planificar **barato** (padre en cabeza, `explore` `fast`, planificador `balanced`/`strong`→**medio**); implementar y verificar **solo** `fast`/`balanced` (Composer o **Grok**/homólogo *medium*); **Opus / strong-thinking** solo con señales de complejidad **alta** documentadas en el anuncio.
 
-## Askbox-first (UI y copy)
+## Askbox-first (UI, textos, Q&A, borradores)
 
-Si `.cursor/skills/askbox-first/SKILL.md` está instalado, **antes** de gastar subagentes Cursor en:
+Si `.cursor/skills/askbox-first/SKILL.md` está instalado, **antes** de gastar subagentes Cursor en tareas de **solo inferencia** (sin explore masivo ni shell):
 
-- **UI / maquetación / temas visuales / ayuda frontend**, o
-- **copy / legibilidad / documentación** (README, changelogs, textos de UI),
+- **UI** — maquetación, temas visuales, ayuda frontend;
+- **copy / docs** — legibilidad, README, changelogs, strings de UI;
+- **qa** — respuestas a preguntas del usuario, explicaciones, comparativas (contexto acotado en el prompt);
+- **draft** — borradores, ideas, resúmenes, listas en texto;
 
-el padre intenta **una pasada** vía `POST /v1/ask` (tiers `fast` / `balanced` / `auto` según la skill). Askbox **propone**; Cursor **implementa** en el repo y hace Verify.
+el padre intenta **una pasada** vía `POST /v1/ask` (tiers `fast` / `balanced` / `auto` según la skill), **incluido en el turno del padre** cuando no hace falta Task. Askbox **propone o responde**; Cursor **implementa** en el repo, **explora** con tools, **planifica** (modo C), **verifica** con shell, y actúa como **fallback** si askbox falla.
 
-Si askbox no está configurado, falla (429/502/agotado), la salida no pasa el check breve de la skill, o el usuario rechaza el resultado → **fallback** retomando la **misma heurística Cursor** de «Elección de modelo» y «Resolución en runtime» (no un Composer genérico por defecto): tipo de tarea → nivel → slug en `available_subagent_models`; en UI/copy, preferir **`balanced` + Composer** antes que especialidades caras salvo que el encargo exija visual/escritura puntera; anunciar el motivo del fallback y recordar configurar `ASKBOX_API_URL` / `ASKBOX_ACCESS_TOKEN` si el usuario quiere ahorrar.
+**Presupuesto Multitask:** con `ASKBOX_*` configurados, **no** abrir `Task` Cursor solo para Q&A o redacción que askbox puede cubrir; reservar Tasks para código, explore, verify y plan complejo.
+
+Si askbox no está configurado, falla (429/502/agotado), la salida no pasa el check breve de la skill, o el usuario rechaza el resultado → **fallback** retomando la **misma heurística Cursor** de «Elección de modelo» y «Resolución en runtime» (no un Composer genérico por defecto): tipo de tarea → nivel → slug en `available_subagent_models`; en UI/copy/docs/qa/draft, preferir **`fast`/`balanced` + Composer** antes que especialidades caras; anunciar el motivo del fallback y recordar configurar `ASKBOX_API_URL` / `ASKBOX_ACCESS_TOKEN` si el usuario quiere ahorrar.
 
 ## Elección de modelo (solo el padre)
 
@@ -44,7 +48,7 @@ Si askbox no está configurado, falla (429/502/agotado), la salida no pasa el ch
    - **Explore, status, checks puntuales, verificación rápida de comandos** → `fast`; preferir variante *fast* de Composer u homólogo ligero/barato del catálogo.
    - **Implementación de código mecánica** (según plan, migraciones, boilerplate, tests) → **`balanced`**; **Composer** o Grok/homólogo *medium*; **nunca** Opus/thinking para implement o verify.
    - **UI, maquetación, frontend visual** → **askbox-first** si la skill está instalada; en fallback Cursor: **`balanced` + Composer** por defecto; especialidad visual solo si askbox falló y el diff es claramente visual.
-   - **Docs, redacción, changelogs, copy** → **askbox-first**; fallback: **`fast`/`balanced` + Composer**; especialidad escritura solo si hace falta tono largo y Composer no basta.
+   - **Docs, redacción, changelogs, copy, Q&A, borradores/resúmenes** → **askbox-first** (padre o una pasada askbox); fallback: **`fast`/`balanced` + Composer**; especialidad escritura solo si hace falta tono largo y Composer no basta.
    - **Plan / diseño** (cuando haga falta Task planificador) → ver tabla «Planificación: tres modos»; nivel `strong` **no** implica Opus automáticamente.
    - **Revisión de alto riesgo** (Bugbot / security-review) → solo si el usuario lo pide explícitamente; nivel `strong-thinking`.
 4. **Ahorro de coste:** no escalar a Claude Opus, GPT thinking ni Gemini caros si Composer o **Grok** (*medium*) bastan. Especialidades caras **solo** con motivo en el anuncio.
@@ -115,7 +119,7 @@ El padre planifica en cabeza y delega implementador **`balanced`**, o un único 
 | Implementación según plan | **`balanced`** (nunca Opus) |
 | Tests, migraciones, boilerplate | **`balanced`** |
 | UI / maquetación | **askbox-first**; fallback Composer `balanced` |
-| Docs / copy | **askbox-first**; fallback Composer `fast`/`balanced` |
+| Docs / copy / qa / draft | **askbox-first**; fallback Composer `fast`/`balanced` |
 | Exploración (`explore`) | **`fast`** |
 | Verify (build, tests, scripts) | **`fast`** o padre; no Task caro salvo fallo que requiera debug acotado |
 | Revisión crítica (usuario pide review) | **`strong-thinking`** |
@@ -149,4 +153,4 @@ cómo publicar con `gh` si no hay remoto, y qué nunca se commitea (secretos).
 
 ## Flujo detallado
 
-Usar el skill `.cursor/skills/plan-implement-verify/SKILL.md` en este repositorio (o equivalente copiado) para fases Plan → Implement → Verify y hábitos de tokens. Para UI/copy, `.cursor/skills/askbox-first/SKILL.md`. Tras Verify, aplicar `git-autopilot` si está instalado.
+Usar el skill `.cursor/skills/plan-implement-verify/SKILL.md` en este repositorio (o equivalente copiado) para fases Plan → Implement → Verify y hábitos de tokens. Para UI, textos, Q&A y borradores, `.cursor/skills/askbox-first/SKILL.md`. Tras Verify, aplicar `git-autopilot` si está instalado.

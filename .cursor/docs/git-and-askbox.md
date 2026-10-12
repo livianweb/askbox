@@ -20,7 +20,7 @@ del kit para la app, ni al revés.
 ## Capa A — Askbox LLM (askbox-first)
 
 - Documentación: `.cursor/skills/askbox-first/SKILL.md`.
-- Askbox **no** sustituye a Git: solo aporta inferencia barata para UI/copy antes de gastar
+- Askbox **no** sustituye a Git: solo aporta inferencia barata para UI, textos, Q&A y borradores antes de gastar
   subagentes Cursor.
 - El orquestador **sí** necesita A en el entorno del agente para usar askbox-first; eso es
   independiente de dónde viva el código del proyecto.
