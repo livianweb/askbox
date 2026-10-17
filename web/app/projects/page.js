@@ -9,6 +9,7 @@ const SCOPES_INFO = [
   { id: "prompts:write", label: "prompts:write", desc: "Crear, editar y versionar plantillas de prompt", defaultChecked: false },
   { id: "keys:write", label: "keys:write", desc: "Añadir o eliminar claves de proveedor", defaultChecked: false },
   { id: "usage:read", label: "usage:read", desc: "Consultar métricas y costes estimados de consumo", defaultChecked: false },
+  { id: "tokens:write", label: "tokens:write", desc: "Backend de confianza: emitir, listar y revocar tokens de usuarios externos (solo ask:read y usage:read). No lee claves de proveedor.", defaultChecked: false },
 ];
 
 function Keys({ project }) {
