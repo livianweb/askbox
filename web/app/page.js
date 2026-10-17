@@ -318,7 +318,7 @@ export default function Home() {
               <code>Authorization: Bearer ab_live_...</code>
             </p>
             <p style={{ fontSize: "0.82rem", color: "var(--text-muted)" }}>
-              Soportan scopes específicos (<code>ask:read</code>, <code>usage:read</code>, etc.) para limitar los permisos de cada integración.
+              Soportan scopes específicos (<code>ask:read</code>, <code>usage:read</code>, <code>tokens:write</code>, etc.) para limitar los permisos de cada integración.
             </p>
           </div>
 

@@ -59,6 +59,24 @@ class AskAuth:
     scopes: list[str]
 
 
+async def service_token_auth(request: Request) -> dict:
+    """Bearer ab_live_ con scope tokens:write, limitado al proyecto del token.
+
+    No acepta cookie de sesión ni el Bearer de POST /v1/auth/token (ese es una
+    sesión completa). No autoriza claves de proveedor ni /v1/ask.
+    """
+    pool = request.app.state.pool
+    bearer = _bearer_token(request)
+    if not bearer or not bearer.startswith("ab_live_"):
+        raise err(401, "unauthenticated", "Se requiere Authorization: Bearer ab_live_ con scope tokens:write.")
+    ctx = await lookup_access_token(pool, bearer)
+    if not ctx:
+        raise err(401, "unauthenticated", "Token de servicio inválido o revocado.")
+    if not has_scope(ctx["scopes"], "tokens:write"):
+        raise err(403, "forbidden", "El token no tiene scope tokens:write.")
+    return ctx
+
+
 async def ask_auth(request: Request) -> AskAuth:
     """Sesión de usuario o Bearer ab_live_ con scope ask:read (proyecto fijado por el token)."""
     pool = request.app.state.pool

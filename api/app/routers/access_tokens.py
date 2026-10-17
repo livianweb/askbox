@@ -19,14 +19,17 @@ class AccessTokenIn(BaseModel):
 
 
 def _token_out(r) -> dict:
+    revoked = r.get("revoked_at")
     return {
         "id": str(r["id"]),
         "label": r["label"],
         "prefix": r["prefix"],
+        "last4": r.get("last4"),
+        "external_user_id": r.get("external_user_id"),
         "scopes": list(r["scopes"] or []),
         "created_at": r["created_at"].isoformat(),
         "last_used_at": r["last_used_at"].isoformat() if r["last_used_at"] else None,
-        "revoked_at": r["revoked_at"].isoformat() if r.get("revoked_at") else None,
+        "revoked_at": revoked.isoformat() if revoked else None,
     }
 
 
@@ -35,7 +38,7 @@ async def list_access_tokens(project_id: str, request: Request, user: dict = Dep
     pool = request.app.state.pool
     project = await get_project(pool, user["id"], project_id)
     rows = await pool.fetch(
-        "SELECT id, label, prefix, scopes, created_at, last_used_at, revoked_at "
+        "SELECT id, label, prefix, last4, external_user_id, scopes, created_at, last_used_at, revoked_at "
         "FROM project_access_tokens WHERE project_id = $1 ORDER BY created_at DESC",
         project["id"],
     )
@@ -51,10 +54,10 @@ async def create_access_token(
     scopes = parse_scopes(body.scopes)
     token, prefix = new_access_token()
     row = await pool.fetchrow(
-        "INSERT INTO project_access_tokens(project_id, label, token_hash, prefix, scopes) "
-        "VALUES ($1, $2, $3, $4, $5) "
-        "RETURNING id, label, prefix, scopes, created_at, last_used_at",
-        project["id"], body.label.strip(), token_hash(token), prefix, scopes,
+        "INSERT INTO project_access_tokens(project_id, label, token_hash, prefix, scopes, last4) "
+        "VALUES ($1, $2, $3, $4, $5, $6) "
+        "RETURNING id, label, prefix, last4, scopes, created_at, last_used_at",
+        project["id"], body.label.strip(), token_hash(token), prefix, scopes, token[-4:],
     )
     out = _token_out(row)
     out["token"] = token

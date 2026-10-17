@@ -58,8 +58,11 @@ En Docker, el contenedor `api` no lee `.env` del repo (está enmascarado). Para 
 | GET/POST | `/v1/projects` | Listar / crear proyecto |
 | GET/POST | `/v1/projects/{id}/keys` | Listar (solo `last4`, `status`, `label`, `provider`) / alta de clave (se cifra) |
 | DELETE | `/v1/projects/{id}/keys/{key_id}` | Borrar clave |
-| GET/POST | `/v1/projects/{id}/access-tokens` | Listar metadatos (`prefix`, `scopes`, `last4` vía prefix) / crear token (`ab_live_…` solo en la respuesta POST) |
-| DELETE | `/v1/projects/{id}/access-tokens/{token_id}` | Revocar token de proyecto |
+| GET/POST | `/v1/projects/{id}/access-tokens` | Sesión. Listar metadatos (`prefix`, `last4`, `scopes`, `external_user_id`) / crear token (`ab_live_…` solo en la respuesta POST). Scope `tokens:write` = token de servicio |
+| DELETE | `/v1/projects/{id}/access-tokens/{token_id}` | Sesión. Revocar cualquier token del proyecto (incluido el de servicio) |
+| POST | `/v1/projects/{id}/external-tokens` | Bearer `ab_live_` con `tokens:write` de **ese** proyecto. Emite un token de usuario externo (`ask:read`, opcional `usage:read`). El secreto solo sale aquí |
+| GET | `/v1/projects/{id}/external-tokens` | Mismo Bearer. Lista metadatos (`prefix`, `last4`); filtro opcional `?external_user_id=`. Sin secreto |
+| DELETE | `/v1/projects/{id}/external-tokens/{token_id}` | Mismo Bearer. Revoca un token con `external_user_id` (no el token de servicio) |
 | GET/POST | `/v1/projects/{id}/prompts` | Listar última versión por nombre / crear nueva versión (`name`, `system_prompt`, `user_template`, `default_tier`) |
 | GET | `/v1/projects/{id}/prompts/{name}` | Última versión (`?version=N` opcional) |
 | GET | `/v1/projects/{id}/prompts/{name}/versions` | Historial de versiones |
@@ -166,6 +169,43 @@ curl -b cj -s $J -d '{"name":"saludo","user_template":"Hola {{quien}}","default_
 curl -s $J -H "Authorization: Bearer $TOK" -d '{"prompt_template":"saludo","variables":{"quien":"mundo"}}' $A/v1/ask
 ```
 
+### Snake OS: token de servicio y tokens de usuario
+
+`POST /v1/auth/token` es una **sesión** del único usuario de Askbox (puede gestionar claves y proyectos). Snake OS no debe usarlo.
+
+El dueño de Askbox crea **una vez** un token de proyecto con scope `tokens:write` (sesión web o la llamada de abajo) y lo guarda en el servidor de Snake OS. Ese Bearer solo puede emitir, listar y revocar tokens `ab_live_` de **su** proyecto, asociados a un `external_user_id`. No lee claves de proveedor, no llama a `/v1/ask` y no puede crear otro token con `tokens:write` ni `keys:write`.
+
+Cada token de usuario lleva `ask:read` (y, si se pide, `usage:read`), el rate limit ya existente de `/v1/ask` (`ASKBOX_ASK_RATE_PER_MIN` por id de token) y se revoca al momento. El valor en claro se devuelve solo en el POST.
+
+```bash
+A=http://localhost:8066; J='-H Content-Type:application/json'
+# $PID es el proyecto de Askbox (bloque anterior). cj es la cookie de sesión del dueño.
+# 1. Dueño de Askbox (cookie de sesión) — token de servicio, una sola vez
+SVC=$(curl -b cj -s $J -d '{"label":"snake-os","scopes":["tokens:write"]}' \
+  $A/v1/projects/$PID/access-tokens | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+
+# 2. Snake OS emite la clave del usuario externo X
+curl -s $J -H "Authorization: Bearer $SVC" \
+  -d '{"external_user_id":"user-42","label":"snake-os","scopes":["ask:read"]}' \
+  $A/v1/projects/$PID/external-tokens
+# → 201 {id, external_user_id, prefix, last4, scopes, token, note}
+#    scopes puede omitirse (equivale a ["ask:read"]) o ser ["ask:read","usage:read"]
+
+# 3. Listar (solo prefix y last4; incluye revocados, con revoked_at)
+curl -s -H "Authorization: Bearer $SVC" \
+  "$A/v1/projects/$PID/external-tokens?external_user_id=user-42"
+
+# 4. Revocar
+curl -s -X DELETE -H "Authorization: Bearer $SVC" \
+  $A/v1/projects/$PID/external-tokens/$TOKEN_ID
+
+# 5. El usuario de Snake OS llama a Askbox con su propio token
+curl -s $J -H "Authorization: Bearer $USERTOK" \
+  -d '{"prompt":"Hola","tier":"fast"}' $A/v1/ask
+```
+
+`external_user_id`: 1–128 caracteres, letras, dígitos y `. _ : @ + -`. Cabecera obligatoria: `Authorization: Bearer ab_live_…` (la cookie de sesión no sirve en estas tres rutas). Errores: `401` sin Bearer válido, `403` si el token no es de ese proyecto o no tiene `tokens:write`, `404` al revocar un id ajeno o el propio token de servicio, `422` si los scopes o el id externo no son válidos.
+
 Sin clave de proveedor, `/v1/ask` responde `502 no_provider_key` y deja la traza en `requests`. Con claves de sistema (`GEMINI_API_KEY` / `OPENROUTER_API_KEY` en `.env`) y proyecto con `allow_system_keys=true`, se usan como respaldo.
 
 Tests sin red: `docker run --rm -v "$PWD/api":/srv -w /srv -e PYTHONPATH=/srv askbox-api python -m unittest discover -s tests`
@@ -199,7 +239,7 @@ Variables que lee la API (`api/app/config.py` → `api/app/mailer.py`): `ASKBOX_
 - Modelos y cadenas en la tabla `model_catalog` (seeds/migraciones en `api/app/migrations/`); ajustar `enabled`, `priority`, `tier` y costes en BD (o nueva migración), no en código.
 - Seguridad: AES-256-GCM con AAD `proyecto:proveedor`, nonce aleatorio, `key_version`; la API nunca devuelve claves; logs sin prompts (solo longitud y hash truncado).
 - Límites: prompt ≤ 20000 chars, `max_output_tokens` ≤ 8192, rate limit Redis (`ASKBOX_ASK_RATE_PER_MIN`, 30/min por usuario, token `ab_live_` y proyecto en `/v1/ask`; login 10/min por IP).
-- Tokens de proyecto: prefijo `ab_live_`, SHA-256 en `project_access_tokens`; scopes `ask:read`, `prompts:write`, `keys:write`, `usage:read` (gestión UI con sesión; `/v1/ask` con Bearer de token).
+- Tokens de proyecto: prefijo `ab_live_`, SHA-256 en `project_access_tokens`; scopes `ask:read`, `prompts:write`, `keys:write`, `usage:read`, `tokens:write`. La gestión con sesión sigue en `/access-tokens`. `tokens:write` solo habilita `/external-tokens` (usuarios con `ask:read` y opcional `usage:read`); las claves de proveedor siguen exigiendo sesión.
 - Tras HTTPS, poner `ASKBOX_COOKIE_SECURE=true` en `.env` (o guardar `public_url` https en `/settings/deploy`; la API usa cookies `Secure` según la URL efectiva aunque el contenedor no se haya reiniciado).
 - **Fase 3 (routing):** `tier=auto` infiere `fast|balanced|strong` (longitud, código, `max_output_tokens`, `json_schema`, `default_tier` del proyecto) y **escala una sola vez** al siguiente nivel si la cascada falla. Caché Redis con clave que incluye `json_schema`. Keypool con cooldown `min(900, max(60, 2^n·60))` y `exhausted`. `usage_daily` + `GET /v1/projects/{id}/usage`. Respuesta de `/v1/ask` incluye `cache_hit`, tokens y `models_chain` opcional.
 - **Fase 4 (batch/stream):** `batch_jobs` + `batch_job_items` en PostgreSQL; worker `arq` (`process_batch_job`). Stream reutiliza `app/llm/router.ask` y emite trozos SSE antes del evento `done`. `GET /v1/alerts` y badge en nav `/usage` (gráficas + CSV). Límite `ASKBOX_BATCH_MAX_ITEMS` (32 por defecto).

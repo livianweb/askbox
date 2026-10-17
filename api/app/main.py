@@ -13,7 +13,9 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.crypto import master_key_ready
 from app.db import create_pool, run_migrations
-from app.routers import access_tokens, alerts, ask, auth, batch, deploy_settings, git_settings, ocr, projects, prompts, usage
+from app.routers import (
+    access_tokens, alerts, ask, auth, batch, delegated_tokens, deploy_settings, git_settings, ocr, projects, prompts, usage,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("askbox")
@@ -42,6 +44,7 @@ app = FastAPI(title="askbox API", lifespan=lifespan, docs_url=None, redoc_url=No
 app.include_router(auth.router)
 app.include_router(projects.router)
 app.include_router(access_tokens.router)
+app.include_router(delegated_tokens.router)
 app.include_router(prompts.router)
 app.include_router(ask.router)
 app.include_router(ocr.router)
