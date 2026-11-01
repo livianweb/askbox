@@ -9,6 +9,10 @@ services:
       ASKBOX_MASTER_KEY: ${ASKBOX_MASTER_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # Ollama local (solo si el cliente manda provider=ollama). Hostname del servicio en esta red.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:14b}
+      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
       ASKBOX_COOKIE_SECURE: ${ASKBOX_COOKIE_SECURE:-false}
       ASKBOX_ALLOW_REGISTER: ${ASKBOX_ALLOW_REGISTER:-false}
       ASKBOX_ASK_RATE_PER_MIN: ${ASKBOX_ASK_RATE_PER_MIN:-30}
@@ -89,6 +93,9 @@ services:
       ASKBOX_MASTER_KEY: ${ASKBOX_MASTER_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:14b}
+      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
       ASKBOX_REPO_PATH: /repo
       # Auto-update diario (git pull --ff-only + compose rebuild en este directorio).
       ASKBOX_AUTO_UPDATE: ${ASKBOX_AUTO_UPDATE:-true}
@@ -152,6 +159,22 @@ services:
       - redis_data:/data
     restart: unless-stopped
 
+  # LLM local. La API solo lo usa con provider=ollama (DNS ollama:11434 en askbox_default).
+  # El puerto publicado queda en localhost; el resto de la red no lo ve.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    environment:
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-1}
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
 volumes:
   db_data:
   redis_data:
+  ollama_data:

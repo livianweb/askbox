@@ -107,6 +107,8 @@ async def _invoke_llm(
     started: float,
     normalized_attachments: list[NormalizedAttachment] | None = None,
     task_used: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
 ):
     try:
         return await llm_router.ask(
@@ -119,6 +121,8 @@ async def _invoke_llm(
             json_schema=json_schema,
             normalized_attachments=normalized_attachments,
             task_used=task_used,
+            provider=provider,
+            model=model,
         )
     except llm_router.AskFailure as exc:
         latency_err = int((time.monotonic() - started) * 1000)
@@ -221,6 +225,8 @@ async def run_ask(
     json_schema: dict | None = None,
     normalized_attachments: list[NormalizedAttachment] | None = None,
     task_used: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> dict:
     base = _base_fields(user_id, project, access_token_id, tier_requested, prompt)
     started = time.monotonic()
@@ -236,6 +242,8 @@ async def run_ask(
         started=started,
         normalized_attachments=normalized_attachments,
         task_used=task_used,
+        provider=provider,
+        model=model,
     )
     if normalized_attachments:
         res["task_used"] = task_used
@@ -257,6 +265,8 @@ async def iter_stream_events(
     json_schema: dict | None = None,
     normalized_attachments: list[NormalizedAttachment] | None = None,
     task_used: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
     chunk_size: int = 64,
 ) -> AsyncIterator[dict]:
     """Una sola llamada LLM; emite deltas y un evento done con metadatos."""
@@ -275,6 +285,8 @@ async def iter_stream_events(
             started=started,
             normalized_attachments=normalized_attachments,
             task_used=task_used,
+            provider=provider,
+            model=model,
         )
         if normalized_attachments:
             res["task_used"] = task_used

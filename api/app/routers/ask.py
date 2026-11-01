@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app import ask_exec, ratelimit
 from app.llm import attachments
+from app.llm.ollama_route import parse_explicit_provider
 from app.config import settings
 from app.deps import AskAuth, ask_auth, current_user, err
 from app.routers.projects import get_project
@@ -66,6 +67,38 @@ class AskIn(BaseModel):
             "Si se omite, se infiere del prompt (y de json_schema en extract)."
         ),
     )
+    provider: str | None = Field(
+        default=None,
+        max_length=32,
+        description=(
+            "Enrutado explícito. Solo `ollama` (Ollama local, sin Gemini ni OpenRouter). "
+            "Si se omite, la cascada por tier, catálogo y keypool no cambia. "
+            "No admite adjuntos."
+        ),
+    )
+    model: str | None = Field(
+        default=None,
+        max_length=160,
+        description=(
+            "Con provider=ollama, slug de Ollama (p. ej. qwen2.5-coder:14b). "
+            "Si se omite, se usa OLLAMA_MODEL. "
+            "También vale model=ollama/<slug> sin provider (el prefijo elige Ollama). "
+            "Sin provider ni prefijo ollama/, model se rechaza."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _explicit_provider(self):
+        try:
+            parsed = parse_explicit_provider(self.provider, self.model)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from None
+        if parsed is None:
+            self.provider = None
+            self.model = None
+        else:
+            self.provider, self.model = parsed
+        return self
 
     @model_validator(mode="after")
     def _prompt_or_template(self):
@@ -153,6 +186,12 @@ async def _prepare_ask(pool, redis, auth: AskAuth, body: AskIn) -> tuple:
 
     raw_atts = [a.model_dump() for a in (body.attachments or [])]
     normalized = attachments.normalize_attachments(raw_atts if raw_atts else None)
+    if body.provider == "ollama" and normalized:
+        raise err(
+            422,
+            "ollama_no_attachments",
+            "Ollama no admite adjuntos en /v1/ask. Quita attachments o omite provider.",
+        )
     task_used = None
     if normalized:
         task_used = attachments.infer_task(
@@ -171,6 +210,8 @@ async def _prepare_ask(pool, redis, auth: AskAuth, body: AskIn) -> tuple:
     description=(
         "Auth: cookie de sesión o `Authorization: Bearer ab_live_…` (scope ask:read). "
         "Cuerpo: `prompt` o `prompt_template` + `variables`, más tier, tokens y opcionalmente adjuntos. "
+        "Opcional: `provider=ollama` (y `model`, o `model=ollama/<slug>`) envía la petición solo a Ollama local; "
+        "sin ese parámetro la cascada Gemini/OpenRouter no cambia. "
         "Los adjuntos no se guardan; la caché Redis incluye un digest de los bytes enviados al proveedor."
     ),
 )
@@ -190,6 +231,8 @@ async def ask(body: AskIn, request: Request, auth: AskAuth = Depends(ask_auth)):
         json_schema=body.json_schema,
         normalized_attachments=normalized or None,
         task_used=task_used,
+        provider=body.provider,
+        model=body.model,
     )
 
 
@@ -223,6 +266,8 @@ async def ask_stream(body: AskIn, request: Request, auth: AskAuth = Depends(ask_
             json_schema=body.json_schema,
             normalized_attachments=normalized or None,
             task_used=task_used,
+            provider=body.provider,
+            model=body.model,
         ):
             yield _sse(event)
 
