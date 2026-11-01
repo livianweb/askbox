@@ -16,9 +16,12 @@ from app.llm import ollama_local  # noqa: E402
 from app.llm.attachments import NormalizedAttachment  # noqa: E402
 from app.llm.errors import LLMError  # noqa: E402
 from app.llm.heuristics import (  # noqa: E402
+    allin_needs_report,
     allin_shape,
+    allin_stages,
     complex_development,
     is_high_complexity,
+    is_long_context,
     needs_code,
     needs_web,
     ollama_auto_kind,
@@ -78,6 +81,133 @@ class HeuristicTests(unittest.TestCase):
         self.assertTrue(
             complex_development("Hay un deadlock y un bug complejo. Escribe el código SQL que lo corrige.")
         )
+
+    def test_four_local_routes(self):
+        self.assertEqual(
+            ollama_auto_kind("Refactoriza este módulo PHP y el Dockerfile del worker"),
+            "code",
+        )
+        self.assertEqual(ollama_auto_kind("escribe una consulta SQL de los pedidos"), "code")
+        self.assertEqual(
+            ollama_auto_kind("Depura paso a paso el deadlock de Sage X3 entre dos transacciones"),
+            "reason",
+        )
+        self.assertEqual(
+            ollama_auto_kind("Explica el algoritmo complejo de detección de interbloqueos"),
+            "reason",
+        )
+        self.assertEqual(
+            ollama_auto_kind(
+                "Clasifica este ticket de PrestaShop y categoriza la intención del cliente"
+            ),
+            "nlp",
+        )
+        self.assertEqual(
+            ollama_auto_kind("Resume el log largo del worker y dime de qué trata el texto"),
+            "nlp",
+        )
+        self.assertEqual(
+            ollama_auto_kind("Clasifica el ticket y escribe una función PHP que lo resuelva"),
+            "code",
+        )
+        manual = _pad(
+            "Lee el manual de referencia y estas fuentes técnicas.\n\nFuente 1: alpha\nFuente 2: beta\n",
+            2500,
+        )
+        self.assertTrue(is_long_context(manual))
+        self.assertEqual(ollama_auto_kind(manual), "longctx")
+        self.assertEqual(ollama_auto_kind("x" * (8000 * 4)), "longctx")
+        self.assertFalse(is_long_context("Consulta el manual de referencia de Redis"))
+        self.assertNotEqual(ollama_auto_kind("Consulta el manual de referencia de Redis"), "longctx")
+        huge_code = _pad("Hay un deadlock. Escribe el código SQL que lo corrige. ", 9000)
+        self.assertEqual(ollama_auto_kind(huge_code), "pipeline")
+        self.assertEqual(
+            ollama_local.planned_models("Clasifica este ticket de soporte"),
+            [settings.ollama_nlp_model],
+        )
+        self.assertEqual(ollama_local.planned_models(manual), [settings.ollama_longctx_model])
+        self.assertEqual(
+            ollama_local.planned_models("Refactoriza este módulo PHP"),
+            [settings.allin_code_model],
+        )
+
+    def test_nlp_default_is_llama_31(self):
+        if os.getenv("OLLAMA_NLP_MODEL") or os.getenv("ALLIN_NLP_MODEL"):
+            self.skipTest("el entorno pisa el default de NLP")
+        if os.getenv("OLLAMA_LONGCTX_MODEL") or os.getenv("ALLIN_LONGCTX_MODEL"):
+            self.skipTest("el entorno pisa el default de contexto largo")
+        self.assertEqual(settings.ollama_nlp_model, "llama3.1:8b")
+        self.assertEqual(settings.allin_nlp_model, "llama3.1:8b")
+        self.assertEqual(settings.ollama_longctx_model, "mistral-nemo:12b")
+        self.assertEqual(settings.allin_longctx_model, "mistral-nemo:12b")
+        self.assertNotIn("llama3.3", settings.ollama_nlp_model)
+
+    def test_allin_stage_selection(self):
+        simple = allin_stages("Di hola", has_attachments=False, web_needed=False, doc_and_web=False)
+        self.assertEqual(simple, {"shape": "simple", "single": "reason", "context": None, "code": False})
+        self.assertFalse(allin_needs_report(
+            shape="simple", has_extracted=False, has_web=False, has_plan=False, has_code_stage=False,
+        ))
+
+        code = allin_stages(
+            "Escribe una función que sume",
+            has_attachments=False,
+            web_needed=False,
+            doc_and_web=False,
+        )
+        self.assertEqual(code["shape"], "simple")
+        self.assertEqual(code["single"], "code")
+
+        nlp = allin_stages(
+            "Clasifica este ticket de soporte",
+            has_attachments=False,
+            web_needed=False,
+            doc_and_web=False,
+        )
+        self.assertEqual(nlp["shape"], "simple")
+        self.assertEqual(nlp["single"], "nlp")
+        self.assertFalse(allin_needs_report(
+            shape="simple", has_extracted=False, has_web=False, has_plan=False, has_code_stage=False,
+        ))
+
+        reason = allin_stages(
+            "qué dice",
+            has_attachments=True,
+            web_needed=False,
+            doc_and_web=False,
+        )
+        self.assertEqual(reason["shape"], "reason")
+        self.assertEqual(reason["context"], "reason")
+        self.assertFalse(reason["code"])
+
+        long_read = allin_stages(
+            "qué dice el documento",
+            has_attachments=True,
+            web_needed=False,
+            doc_and_web=False,
+            context_tokens=8000,
+        )
+        self.assertEqual(long_read["context"], "longctx")
+        self.assertFalse(long_read["code"])
+        self.assertTrue(allin_needs_report(
+            shape="reason", has_extracted=True, has_web=False, has_plan=False, has_code_stage=False,
+        ))
+
+        plan = allin_stages(
+            "Hay un deadlock. Escribe el código SQL.",
+            has_attachments=False,
+            web_needed=True,
+            doc_and_web=False,
+        )
+        self.assertEqual(plan["shape"], "plan_code")
+        self.assertEqual(plan["context"], "reason")
+        self.assertTrue(plan["code"])
+        self.assertTrue(allin_needs_report(
+            shape="plan_code", has_extracted=False, has_web=True, has_plan=True, has_code_stage=True,
+        ))
+        self.assertFalse(allin_needs_report(
+            shape="reason", has_extracted=False, has_web=False, has_plan=True, has_code_stage=False,
+        ))
 
     def test_allin_simple_shape_skips_chain(self):
         self.assertEqual(
@@ -241,6 +371,54 @@ class OllamaLocalRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res["provider"], "ollama")
         self.assertEqual(res["models_chain"], [f"ollama:{settings.ollama_reason_model}"])
 
+    async def test_nlp_prompt_uses_llama_and_never_cloud(self):
+        complete = _RecordingComplete()
+        cascade = AsyncMock(side_effect=AssertionError("sin nube"))
+        with (
+            patch("app.llm.ollama_local.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(),
+                messages=[{
+                    "role": "user",
+                    "content": "Clasifica este ticket y categoriza la intención del cliente",
+                }],
+                tier="fast",
+                max_tokens=64,
+                provider="ollama",
+                model="auto",
+            )
+        cascade.assert_not_called()
+        self.assertEqual([c[0] for c in complete.calls], [settings.ollama_nlp_model])
+        self.assertEqual(res["provider"], "ollama")
+        self.assertEqual(res["key_source"], "local")
+        self.assertEqual(res["models_chain"], [f"ollama:{settings.ollama_nlp_model}"])
+
+    async def test_long_context_uses_mistral_nemo_only(self):
+        complete = _RecordingComplete()
+        cascade = AsyncMock(side_effect=AssertionError("sin nube"))
+        manual = _pad("Lee el manual de referencia.\n\nFuente 1: alpha\nFuente 2: beta\n", 2500)
+        with (
+            patch("app.llm.ollama_local.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(),
+                messages=[{"role": "user", "content": manual}],
+                tier="fast",
+                max_tokens=128,
+                provider="ollama",
+            )
+        cascade.assert_not_called()
+        self.assertEqual([c[0] for c in complete.calls], [settings.ollama_longctx_model])
+        self.assertEqual(res["provider"], "ollama")
+        self.assertEqual(res["models_chain"], [f"ollama:{settings.ollama_longctx_model}"])
+
     async def test_complex_development_is_local_pipeline(self):
         complete = _RecordingComplete()
         cascade = AsyncMock(side_effect=AssertionError("sin nube"))
@@ -390,9 +568,15 @@ class AllinRouteTests(unittest.IsolatedAsyncioTestCase):
         extract.assert_awaited()
         web.assert_not_called()
         self.assertEqual(res["models_chain"][0], "allin:ocr")
+        self.assertEqual(
+            [c[0] for c in complete.calls],
+            [settings.allin_reason_model, settings.allin_nlp_model],
+        )
         self.assertIn("FACTURA 10", complete.calls[0][1][-1]["content"])
-        self.assertEqual(complete.calls[0][0], settings.allin_reason_model)
+        self.assertIn("Resultado de la tarea:", complete.calls[1][1][-1]["content"])
         self.assertTrue(all("attachments" not in msg for msg in complete.calls[0][1]))
+        self.assertEqual(res["model_used"], settings.allin_nlp_model)
+        self.assertEqual(res["provider"], "allin")
 
     async def test_web_then_plan_then_code(self):
         complete = _RecordingComplete()
@@ -431,16 +615,19 @@ class AllinRouteTests(unittest.IsolatedAsyncioTestCase):
         web.assert_awaited()
         self.assertEqual(
             [c[0] for c in complete.calls],
-            [settings.allin_reason_model, settings.allin_code_model],
+            [settings.allin_reason_model, settings.allin_code_model, settings.allin_nlp_model],
         )
         self.assertIn("lock_timeout", complete.calls[0][1][-1]["content"])
         self.assertIn("Plan de diseño:", complete.calls[1][1][-1]["content"])
+        self.assertIn("Resultado de la tarea:", complete.calls[2][1][-1]["content"])
         self.assertEqual(res["provider"], "allin")
-        self.assertEqual(res["model_used"], settings.allin_code_model)
+        self.assertEqual(res["model_used"], settings.allin_nlp_model)
         self.assertEqual(
             res["models_chain"][:3],
             ["allin:web", "gemini:peer", f"ollama:{settings.allin_reason_model}"],
         )
+        self.assertIn(f"ollama:{settings.allin_code_model}", res["models_chain"])
+        self.assertIn(f"ollama:{settings.allin_nlp_model}", res["models_chain"])
 
     async def test_web_failure_still_answers_locally(self):
         complete = _RecordingComplete(result="sin web")
@@ -464,6 +651,87 @@ class AllinRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res["text"], "sin web")
         self.assertNotIn("allin:web", res["models_chain"])
         self.assertEqual(res["provider"], "allin")
+
+    async def test_simple_nlp_is_one_llama_call(self):
+        complete = _RecordingComplete()
+        cascade = AsyncMock(side_effect=AssertionError("sin fallback"))
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(),
+                messages=[{"role": "user", "content": "Clasifica este ticket de soporte: no puede pagar"}],
+                tier="fast",
+                max_tokens=64,
+                mode="allin",
+            )
+        cascade.assert_not_called()
+        self.assertEqual([c[0] for c in complete.calls], [settings.allin_nlp_model])
+        self.assertEqual(res["provider"], "allin")
+        self.assertNotIn("allin:ocr", res["models_chain"])
+
+    async def test_massive_context_uses_mistral_then_report(self):
+        complete = _RecordingComplete()
+        extract = AsyncMock(return_value="pagina " * 20000)
+        att = NormalizedAttachment(mime="image/png", data=b"png", sha256="abc", size=3, filename="manual.png")
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.allin.extract_documents", extract),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(),
+                messages=[{"role": "user", "content": "qué dice el manual"}],
+                tier="fast",
+                max_tokens=64,
+                mode="allin",
+                normalized_attachments=[att],
+            )
+        self.assertEqual(
+            [c[0] for c in complete.calls],
+            [settings.allin_longctx_model, settings.allin_nlp_model],
+        )
+        self.assertEqual(res["provider"], "allin")
+        self.assertEqual(res["model_used"], settings.allin_nlp_model)
+        self.assertEqual(res["models_chain"][0], "allin:ocr")
+
+    async def test_report_failure_keeps_prior_answer(self):
+        seen = {"n": 0}
+
+        async def complete(messages, *, model, max_tokens, temperature=0.4):
+            seen["n"] += 1
+            if seen["n"] == 1:
+                return _ok(model, "resolución local")
+            raise LLMError("timeout", kind="retry")
+
+        cascade = AsyncMock(side_effect=AskFailure(
+            "cascada agotada", tier_used="fast", attempts=1, code="provider_failed",
+        ))
+        extract = AsyncMock(return_value="[a.png p1]\nFACTURA 10")
+        att = NormalizedAttachment(mime="image/png", data=b"png", sha256="abc", size=3, filename="a.png")
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.allin.extract_documents", extract),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(),
+                messages=[{"role": "user", "content": "qué pone en el documento"}],
+                tier="fast",
+                max_tokens=64,
+                mode="allin",
+                normalized_attachments=[att],
+            )
+        cascade.assert_awaited()
+        self.assertEqual(res["text"], "resolución local")
+        self.assertEqual(res["provider"], "allin")
+        self.assertEqual(res["model_used"], settings.allin_reason_model)
 
     async def test_local_failure_falls_back_to_cascade(self):
         complete = _RecordingComplete(error=LLMError("connection refused", kind="retry"))
@@ -696,6 +964,14 @@ class ProviderPayloadTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(seen["json"]["plugins"], [{"id": "web", "max_results": 3}])
         self.assertEqual(seen["json"]["model"], "m")
+
+
+def _pad(text: str, tokens: int) -> str:
+    unit = "detalle técnico del procedimiento. "
+    need = tokens * 4 - len(text)
+    if need <= 0:
+        return text
+    return text + unit * (need // len(unit) + 1)
 
 
 class _FakeResp:

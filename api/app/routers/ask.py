@@ -72,17 +72,19 @@ class AskIn(BaseModel):
         max_length=32,
         description=(
             "Enrutado explícito. `ollama`: solo Ollama local, sin Gemini, OpenRouter ni web "
-            "(sin modelo o con `auto`, elige Qwen o DeepSeek en local; un fallo no cae a la nube). "
+            "(sin modelo o con `auto`, elige en local código, razonamiento, texto o contexto largo; "
+            "un fallo no cae a la nube). "
             "`allin`: alias de `mode=allin` (híbrido). "
             "Si se omite, la cascada por tier, catálogo y keypool no cambia. "
-            "`ollama` no admite adjuntos; `allin` sí."
+            "`ollama` no admite adjuntos; `allin` sí (OCR local)."
         ),
     )
     model: str | None = Field(
         default=None,
         max_length=160,
         description=(
-            "Con provider=ollama, slug de Ollama (p. ej. qwen2.5-coder:14b o deepseek-r1:14b). "
+            "Con provider=ollama, slug de Ollama (p. ej. qwen2.5-coder:14b, deepseek-r1:14b, "
+            "llama3.1:8b o mistral-nemo:12b). "
             "Si se omite o es `auto`, la selección local depende del prompt (no llama a la nube). "
             "También vale model=ollama/<slug> sin provider (el prefijo elige Ollama). "
             "Sin provider ni prefijo ollama/, model se rechaza. Con mode/provider allin se ignora."
@@ -93,7 +95,8 @@ class AskIn(BaseModel):
         max_length=32,
         description=(
             "Orquestador opcional. `allin` (también `provider=allin`) ejecuta extracción de adjuntos, "
-            "resumen web si el prompt lo pide, DeepSeek local y Qwen local, con fallback a la cascada "
+            "resumen web si el prompt lo pide, DeepSeek o Mistral Nemo en local, Qwen si hay código "
+            "y Llama para el informe si hubo varias etapas, con fallback a la cascada "
             "Gemini/OpenRouter si Ollama falla. Si se omite, la cascada o `provider=ollama` no cambian. "
             "`mode=allin` tiene prioridad sobre `provider=ollama`."
         ),
@@ -236,7 +239,7 @@ async def _prepare_ask(pool, redis, auth: AskAuth, body: AskIn) -> tuple:
         "Opcional: `provider=ollama` (y `model`, o `model=ollama/<slug>`) es 100 % local "
         "(sin Gemini, OpenRouter ni web; si Ollama falla, 502, sin fallback). "
         "`mode=allin` o `provider=allin` usa el orquestador híbrido (adjuntos, web si hace falta, "
-        "modelos locales y fallback a la cascada). "
+        "modelos locales —incluido el informe— y fallback a la cascada). "
         "Sin esos campos la cascada Gemini/OpenRouter no cambia. "
         "Los adjuntos no se guardan; la caché Redis incluye un digest de los bytes enviados al proveedor."
     ),

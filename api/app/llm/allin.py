@@ -3,13 +3,18 @@
 Etapas que se saltan si no hacen falta:
 1. Extracción de adjuntos (OCR / texto de PDF) — solo si hay adjuntos.
 2. Resumen web (Gemini con Google Search, si no OpenRouter con plugin web).
-3. Razonamiento local (DeepSeek) si la tarea es compleja o vino de PDF+web.
+3. Contexto local: DeepSeek si el razonamiento es duro; Mistral Nemo si la
+   lectura es masiva (prompt u OCR/web ~>8k tokens).
 4. Código local (Qwen) si hace falta código.
-5. Atajo: sin adjuntos, sin web y complejidad baja, una sola llamada local
-   (Qwen si es código, DeepSeek si es lógica).
+5. Informe local (Llama) si las etapas anteriores dejaron trabajo intermedio
+   sustantivo. El atajo de una sola llamada no informa.
+   Atajo: sin adjuntos, sin web y complejidad baja, una sola llamada
+   (Qwen si es código, Llama si es texto, Mistral si el prompt ya es largo,
+   DeepSeek en el resto).
 
 Si una llamada local falla (timeout, conexión, schema), esa etapa —o el cierre—
-cae a la cascada Gemini/OpenRouter. La etapa web, si falla, no tumba la petición.
+cae a la cascada Gemini/OpenRouter. Si falla solo el informe, se conserva el
+resultado previo. La etapa web, si falla, no tumba la petición.
 """
 from __future__ import annotations
 
@@ -20,8 +25,9 @@ from app.llm import attachments, cache, catalog, keypool
 from app.llm.attachments import NormalizedAttachment
 from app.llm.errors import LLMError
 from app.llm.heuristics import (
-    allin_shape,
-    needs_code,
+    allin_needs_report,
+    allin_stages,
+    estimate_tokens,
     needs_web,
     prompt_text,
     stage_messages,
@@ -269,19 +275,24 @@ async def run_allin(
             key_source = summary.get("key_source") or key_source
 
     doc_and_web = bool(extracted.strip()) and bool(web.strip())
-    shape = allin_shape(
+    context_tokens = estimate_tokens(user_prompt) + estimate_tokens(extracted) + estimate_tokens(web)
+    stages = allin_stages(
         user_prompt,
         has_attachments=bool(atts),
         web_needed=needs_web(user_prompt),
         doc_and_web=doc_and_web,
+        context_tokens=context_tokens,
     )
     base_ctx = _context_appendix(
         f"Texto extraído de los adjuntos:\n{_clip(extracted, _DOC_LIMIT)}" if extracted else "",
         f"Resumen técnico (web):\n{_clip(web, _WEB_LIMIT)}" if web else "",
     )
-    reason_model = settings.allin_reason_model
-    code_model = settings.allin_code_model
-    simple_model = code_model if needs_code(user_prompt) else reason_model
+    local_models = {
+        "code": settings.allin_code_model,
+        "reason": settings.allin_reason_model,
+        "nlp": settings.allin_nlp_model,
+        "longctx": settings.allin_longctx_model,
+    }
 
     async def cloud_stage(*, purpose: str, appendix: str, final: bool) -> dict | None:
         payload = stage_messages(messages, purpose=purpose, appendix=appendix)
@@ -361,24 +372,80 @@ async def run_allin(
         return _absorb_cloud(cloud or {})
 
     plan = ""
-    if shape == "plan_code":
-        plan_appendix = base_ctx
-        reasoned = await local_stage(reason_model, purpose="plan", appendix=plan_appendix, final=False)
-        if reasoned is None:
-            cloud_plan = await cloud_stage(purpose="plan", appendix=plan_appendix, final=False)
-            if cloud_plan:
-                absorbed = _absorb_cloud(cloud_plan)
-                plan = absorbed["text"]
-        else:
-            plan = reasoned["full"]
-        code_appendix = _context_appendix(base_ctx, f"Plan de diseño:\n{_clip(plan, _PLAN_LIMIT)}" if plan else "")
-        closed = await finish_local_or_cloud(model=code_model, purpose="code", appendix=code_appendix)
-    elif shape == "simple":
-        closed = await finish_local_or_cloud(model=simple_model, purpose="answer", appendix=base_ctx)
-    elif shape == "code":
-        closed = await finish_local_or_cloud(model=code_model, purpose="code", appendix=base_ctx)
+    note_title = "Plan de diseño"
+    if stages["shape"] == "simple":
+        closed = await finish_local_or_cloud(
+            model=local_models[stages["single"]],
+            purpose="answer",
+            appendix=base_ctx,
+        )
     else:
-        closed = await finish_local_or_cloud(model=reason_model, purpose="plan", appendix=base_ctx)
+        closed = None
+        if stages["context"]:
+            ctx_purpose = "read" if stages["context"] == "longctx" else "plan"
+            note_title = "Lectura del contexto" if ctx_purpose == "read" else "Plan de diseño"
+            ctx_model = local_models[stages["context"]]
+            ctx_final = not stages["code"]
+            reasoned = await local_stage(ctx_model, purpose=ctx_purpose, appendix=base_ctx, final=ctx_final)
+            if reasoned is None:
+                cloud_plan = await cloud_stage(purpose=ctx_purpose, appendix=base_ctx, final=ctx_final)
+                if cloud_plan:
+                    absorbed = _absorb_cloud(cloud_plan)
+                    plan = absorbed["text"]
+                    if ctx_final:
+                        closed = absorbed
+            else:
+                plan = reasoned["full"]
+                if ctx_final:
+                    closed = reasoned
+        if stages["code"]:
+            code_appendix = _context_appendix(
+                base_ctx,
+                f"{note_title}:\n{_clip(plan, _PLAN_LIMIT)}" if plan else "",
+            )
+            closed = await finish_local_or_cloud(
+                model=local_models["code"],
+                purpose="code",
+                appendix=code_appendix,
+            )
+        if closed is None:
+            closed = await finish_local_or_cloud(
+                model=local_models["reason"],
+                purpose="answer",
+                appendix=base_ctx,
+            )
+
+    # El plan de un razonamiento suelto es la propia respuesta: no lo dupliques en el informe.
+    plan_for_report = plan if stages["code"] else ""
+    if json_schema is None and allin_needs_report(
+        shape=stages["shape"],
+        has_extracted=bool(extracted.strip()),
+        has_web=bool(web.strip()),
+        has_plan=bool(plan_for_report.strip()),
+        has_code_stage=bool(stages["code"] and stages["context"]),
+    ):
+        prior = closed
+        report_appendix = _context_appendix(
+            base_ctx,
+            f"{note_title}:\n{_clip(plan_for_report, _PLAN_LIMIT)}" if plan_for_report else "",
+            f"Resultado de la tarea:\n{_clip(prior.get('text') or '', _DOC_LIMIT)}" if prior.get("text") else "",
+        )
+        reported = await local_stage(
+            local_models["nlp"],
+            purpose="report",
+            appendix=report_appendix,
+            final=True,
+        )
+        if reported is not None:
+            closed = reported
+        else:
+            try:
+                cloud_report = await cloud_stage(purpose="report", appendix=report_appendix, final=True)
+            except AskFailure:
+                log.warning("allin: el informe no pudo generarse; se conserva el resultado previo")
+            else:
+                if cloud_report:
+                    closed = _absorb_cloud(cloud_report)
 
     result = {
         "text": closed["text"],

@@ -92,6 +92,19 @@ class Settings:
     allin_code_model: str = (
         os.getenv("ALLIN_CODE_MODEL") or os.getenv("OLLAMA_MODEL") or "qwen2.5-coder:14b"
     ).strip()
+    # Llama 3.3 en Ollama solo publica 70B (no existe el tag llama3.3:8b). El 8B de texto es 3.1.
+    ollama_nlp_model: str = (
+        os.getenv("OLLAMA_NLP_MODEL") or os.getenv("ALLIN_NLP_MODEL") or "llama3.1:8b"
+    ).strip()
+    allin_nlp_model: str = (
+        os.getenv("ALLIN_NLP_MODEL") or os.getenv("OLLAMA_NLP_MODEL") or "llama3.1:8b"
+    ).strip()
+    ollama_longctx_model: str = (
+        os.getenv("OLLAMA_LONGCTX_MODEL") or os.getenv("ALLIN_LONGCTX_MODEL") or "mistral-nemo:12b"
+    ).strip()
+    allin_longctx_model: str = (
+        os.getenv("ALLIN_LONGCTX_MODEL") or os.getenv("OLLAMA_LONGCTX_MODEL") or "mistral-nemo:12b"
+    ).strip()
     openrouter_referer: str = os.getenv("ASKBOX_OPENROUTER_REFERER", "https://askbox.local")
     openrouter_title: str = os.getenv("ASKBOX_OPENROUTER_TITLE", "askbox")
 

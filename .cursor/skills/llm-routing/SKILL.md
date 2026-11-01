@@ -53,11 +53,11 @@ El runtime **solo** lee filas con `enabled = true` (`catalog.peer_chain`, `cost_
 
 ## Ruta explícita a Ollama (fuera de la cascada, 100 % local)
 
-`provider=ollama` o `model=ollama/<slug>` en `POST /v1/ask` y `/v1/ask/stream` llama solo a Ollama (`OLLAMA_BASE_URL`, default `http://ollama:11434`). No usa keypool, `model_catalog`, Gemini, OpenRouter ni búsqueda web, y un fallo **no** cae a la cascada. Sin modelo (o con `auto`), elige en local: código habitual → `OLLAMA_MODEL` / `ALLIN_CODE_MODEL`; bugs, arquitectura o lógica abstracta → `OLLAMA_REASON_MODEL`; desarrollo complejo (las dos) → DeepSeek y luego Qwen, todo local (`models_chain`). Un slug concreto es una sola llamada a ese modelo. No añadir Ollama a `PROVIDER_ORDER` ni al `CHECK` de `model_catalog`.
+`provider=ollama` o `model=ollama/<slug>` en `POST /v1/ask` y `/v1/ask/stream` llama solo a Ollama (`OLLAMA_BASE_URL`, default `http://ollama:11434`). No usa keypool, `model_catalog`, Gemini, OpenRouter ni búsqueda web, y un fallo **no** cae a la cascada. Sin modelo (o con `auto`), elige en local: código → `OLLAMA_MODEL` / `ALLIN_CODE_MODEL`; razonamiento duro → `OLLAMA_REASON_MODEL`; texto/NLP → `OLLAMA_NLP_MODEL` (default `llama3.1:8b`; no existe `llama3.3:8b`); contexto largo → `OLLAMA_LONGCTX_MODEL` (`mistral-nemo:12b`); desarrollo complejo (plan y código) → DeepSeek y luego Qwen, todo local (`models_chain`). Un slug concreto es una sola llamada a ese modelo. Los adjuntos siguen en `422 ollama_no_attachments`. No añadir Ollama a `PROVIDER_ORDER` ni al `CHECK` de `model_catalog`.
 
 ## `mode=allin` (híbrido; alias `provider=allin`)
 
-No es la ruta Ollama. Puede extraer adjuntos, pedir un resumen web (Gemini con grounding u OpenRouter con plugin web, claves del keypool) y llamar a los mismos modelos locales. Si Ollama falla, esa etapa cae a la cascada de abajo. Sin `provider=ollama` ni `mode`/`provider=allin`, el orden de la cascada no cambia.
+No es la ruta Ollama. Puede extraer adjuntos, pedir un resumen web (Gemini con grounding u OpenRouter con plugin web, claves del keypool) y llamar a los mismos modelos locales: etapa 3 DeepSeek o Mistral Nemo, etapa 4 Qwen, etapa 5 Llama 3.1 si hubo trabajo intermedio (no en el atajo de una sola llamada). Si Ollama falla, esa etapa cae a la cascada de abajo. Sin `provider=ollama` ni `mode`/`provider=allin`, el orden de la cascada no cambia.
 
 ## Orden obligatorio de decisión
 
@@ -96,7 +96,7 @@ Heredar el estilo de agentshop-x `gemini.py`:
 | `api/app/llm/ollama_route.py` | Parseo de `provider` / `model` explícitos (`auto` no es un slug de Ollama) |
 | `api/app/llm/ollama_local.py` | Ejecución 100 % local de `provider=ollama` (sin nube) |
 | `api/app/llm/allin.py` | Orquestador híbrido `mode=allin` / `provider=allin` |
-| `api/app/llm/heuristics.py` | Web, complejidad y código (tests sin red) |
+| `api/app/llm/heuristics.py` | Web, código, razonamiento, NLP y contexto largo (tests sin red) |
 | `api/app/llm/keypool.py` | Selección de clave, cooldown, fallos consecutivos |
 | `api/app/llm/cache.py` | Lectura/escritura Redis de respuestas |
 
