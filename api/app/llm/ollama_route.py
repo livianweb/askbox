@@ -3,7 +3,8 @@
 Si el cliente no pide Ollama, `parse_explicit_provider` devuelve None y el
 router sigue con Gemini/OpenRouter. ``provider=allin`` no se resuelve aquí
 (lo hace el orquestador híbrido). Sin modelo, o con modelo ``auto``, el
-slug devuelto es ``auto`` y el router elige Qwen/DeepSeek en local.
+slug devuelto es ``auto`` y el router elige en local código, razonamiento,
+texto o contexto largo.
 """
 from __future__ import annotations
 

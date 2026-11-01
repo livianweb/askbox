@@ -13,8 +13,12 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:14b}
       OLLAMA_REASON_MODEL: ${OLLAMA_REASON_MODEL:-deepseek-r1:14b}
+      OLLAMA_NLP_MODEL: ${OLLAMA_NLP_MODEL:-llama3.1:8b}
+      OLLAMA_LONGCTX_MODEL: ${OLLAMA_LONGCTX_MODEL:-mistral-nemo:12b}
       ALLIN_CODE_MODEL: ${ALLIN_CODE_MODEL:-qwen2.5-coder:14b}
       ALLIN_REASON_MODEL: ${ALLIN_REASON_MODEL:-deepseek-r1:14b}
+      ALLIN_NLP_MODEL: ${ALLIN_NLP_MODEL:-llama3.1:8b}
+      ALLIN_LONGCTX_MODEL: ${ALLIN_LONGCTX_MODEL:-mistral-nemo:12b}
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
       ASKBOX_COOKIE_SECURE: ${ASKBOX_COOKIE_SECURE:-false}
       ASKBOX_ALLOW_REGISTER: ${ASKBOX_ALLOW_REGISTER:-false}
@@ -99,8 +103,12 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:14b}
       OLLAMA_REASON_MODEL: ${OLLAMA_REASON_MODEL:-deepseek-r1:14b}
+      OLLAMA_NLP_MODEL: ${OLLAMA_NLP_MODEL:-llama3.1:8b}
+      OLLAMA_LONGCTX_MODEL: ${OLLAMA_LONGCTX_MODEL:-mistral-nemo:12b}
       ALLIN_CODE_MODEL: ${ALLIN_CODE_MODEL:-qwen2.5-coder:14b}
       ALLIN_REASON_MODEL: ${ALLIN_REASON_MODEL:-deepseek-r1:14b}
+      ALLIN_NLP_MODEL: ${ALLIN_NLP_MODEL:-llama3.1:8b}
+      ALLIN_LONGCTX_MODEL: ${ALLIN_LONGCTX_MODEL:-mistral-nemo:12b}
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
       ASKBOX_REPO_PATH: /repo
       # Auto-update diario (git pull --ff-only + compose rebuild en este directorio).

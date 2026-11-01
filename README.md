@@ -199,43 +199,67 @@ El servicio `ollama` está en `docker-compose.yml` (`ollama/ollama:latest`, `con
 | Variable | Default | Uso |
 |---|---|---|
 | `OLLAMA_BASE_URL` | `http://ollama:11434` | Base que usa la API. También vale `…/v1`. Desde el host: `http://127.0.0.1:11434` |
-| `OLLAMA_MODEL` | `qwen2.5-coder:14b` | Código habitual si no hay `ALLIN_CODE_MODEL` |
-| `OLLAMA_REASON_MODEL` | `deepseek-r1:14b` | Bugs, arquitectura, lógica abstracta (también vale `ALLIN_REASON_MODEL`) |
-| `ALLIN_CODE_MODEL` | `qwen2.5-coder:14b` (o `OLLAMA_MODEL`) | Modelo de código en Ollama auto y en `mode=allin` |
-| `ALLIN_REASON_MODEL` | `deepseek-r1:14b` (o `OLLAMA_REASON_MODEL`) | Modelo de razonamiento en `mode=allin` |
+| `OLLAMA_MODEL` | `qwen2.5-coder:14b` | Código si no hay `ALLIN_CODE_MODEL` |
+| `OLLAMA_REASON_MODEL` | `deepseek-r1:14b` | Razonamiento duro (también vale `ALLIN_REASON_MODEL`) |
+| `OLLAMA_NLP_MODEL` | `llama3.1:8b` | Texto y NLP (también vale `ALLIN_NLP_MODEL`) |
+| `OLLAMA_LONGCTX_MODEL` | `mistral-nemo:12b` | Contexto largo (también vale `ALLIN_LONGCTX_MODEL`) |
+| `ALLIN_CODE_MODEL` | `qwen2.5-coder:14b` (o `OLLAMA_MODEL`) | Código en Ollama auto y en la etapa 4 de `mode=allin` |
+| `ALLIN_REASON_MODEL` | `deepseek-r1:14b` (o `OLLAMA_REASON_MODEL`) | Razonamiento en la etapa 3 de `mode=allin` |
+| `ALLIN_NLP_MODEL` | `llama3.1:8b` (o `OLLAMA_NLP_MODEL`) | Texto en el atajo y el informe (etapa 5) de `mode=allin` |
+| `ALLIN_LONGCTX_MODEL` | `mistral-nemo:12b` (o `OLLAMA_LONGCTX_MODEL`) | Lectura masiva en la etapa 3 de `mode=allin` |
 | `OLLAMA_TIMEOUT` | `120` | Segundos de espera de esa llamada (el 14B local suele pasar de `ASKBOX_PROVIDER_TIMEOUT`) |
 | `OLLAMA_KEEP_ALIVE` | `30m` | El contenedor `ollama` (cuánto deja el modelo cargado) |
 | `OLLAMA_NUM_PARALLEL` | `1` | Peticiones paralelas dentro de Ollama |
 | `OLLAMA_MAX_LOADED_MODELS` | `1` | Modelos cargados a la vez |
 
-Selección cuando `model` se omite o es `"auto"` (sigue siendo local):
+Selección cuando `model` se omite o es `"auto"` (sigue siendo local; el código es el defecto):
 
-- Código directo, SQL habitual, sintaxis, PrestaShop o maquetación → `ALLIN_CODE_MODEL` / `OLLAMA_MODEL` (Qwen).
-- Bug complejo, deadlock, arquitectura o lógica abstracta, sin pedir código → `OLLAMA_REASON_MODEL` (DeepSeek). Una sola llamada.
-- Desarrollo complejo (lo anterior **y** hace falta código) → DeepSeek escribe el plan y Qwen el código. `models_chain` lista los dos (`ollama:deepseek-r1:14b`, `ollama:qwen2.5-coder:14b`). Sigue sin salir a internet.
-- `model` con un slug concreto (`qwen2.5-coder:14b`, `deepseek-r1:14b`, `ollama/<slug>`, …) → una sola llamada a ese modelo, sin selección automática.
+| Señal | Modelo |
+|---|---|
+| Escribir, refactorizar, SQL, PHP, PrestaShop, Dockerfile | Qwen `qwen2.5-coder:14b` |
+| Depurar, deadlock de Sage X3, algoritmo complejo, paso a paso (sin pedir código) | DeepSeek `deepseek-r1:14b` |
+| Clasificar tickets, resumir logs, categorizar intención, traducción | Llama `llama3.1:8b` |
+| Manual de referencia, varias fuentes técnicas o prompt de unos 8k tokens (~32000 caracteres) | Mistral Nemo `mistral-nemo:12b` |
+| Razonamiento duro **y** código | DeepSeek planifica y Qwen escribe. Sigue siendo local (`models_chain` lista los dos) |
+| `model` concreto (`qwen2.5-coder:14b`, `ollama/<slug>`, …) | Una sola llamada a ese slug, sin selección |
 
-Hay que tener el modelo de razonamiento en el volumen de Ollama:
+`llama3.3:8b` no se usa: en el registro de Ollama Llama 3.3 solo tiene tag de 70B (`llama3.3:70b`); el pull de un 8B de 3.3 falla con «file does not exist». El hueco de texto en 8B lo cubre `llama3.1:8b`, que es el tag que hay que tener en el host.
+
+El tope `ASKBOX_MAX_PROMPT_CHARS` (20000, unos 5000 tokens) impide llegar a 8000 tokens en `provider=ollama` si no lo subes. Por debajo de ese tope, la ruta larga también salta con un manual de referencia o dos o más fuentes (`Fuente 1:`, `Documento 2:`) y un cuerpo de unos 2000 tokens (~8000 caracteres). En `mode=allin` el OCR del adjunto suma al contexto: un PDF largo elige Mistral Nemo aunque el prompt sea corto.
+
+Un `ollama pull` admite un solo tag:
 
 ```bash
+docker exec ollama ollama pull qwen2.5-coder:14b
 docker exec ollama ollama pull deepseek-r1:14b
+docker exec ollama ollama pull llama3.1:8b
+docker exec ollama ollama pull mistral-nemo:12b
 ```
 
 ```bash
-# (1) Simple → Qwen. No toca Gemini ni OpenRouter.
+# (1) Código (defecto) → Qwen. No toca Gemini ni OpenRouter.
 curl -s $J -H "Authorization: Bearer $TOK" \
-  -d '{"prompt":"Di hola en una frase","provider":"ollama"}' $A/v1/ask
+  -d '{"prompt":"Refactoriza este módulo PHP y el Dockerfile del worker","provider":"ollama"}' $A/v1/ask
 
-# (2) Bug complejo / lógica → DeepSeek. Sigue siendo solo local.
+# (2) Razonamiento duro → DeepSeek. Sigue siendo solo local.
 curl -s $J -H "Authorization: Bearer $TOK" \
-  -d '{"prompt":"Explica el interbloqueo de dos transacciones que se esperan mutuamente","provider":"ollama"}' $A/v1/ask
+  -d '{"prompt":"Depura paso a paso el deadlock de Sage X3 entre dos transacciones","provider":"ollama"}' $A/v1/ask
 
-# (3) Modelo forzado: una sola llamada, aunque el prompt sea complejo.
+# (3) Texto / NLP → Llama 3.1 8B.
+curl -s $J -H "Authorization: Bearer $TOK" \
+  -d '{"prompt":"Clasifica este ticket y categoriza la intención del cliente: no puede pagar el pedido","provider":"ollama"}' $A/v1/ask
+
+# (4) Contexto largo → Mistral Nemo. El cuerpo tiene que ser un manual o varias fuentes
+# (o superar ~8k tokens). Un prompt de una línea no entra en esta ruta.
+curl -s $J -H "Authorization: Bearer $TOK" \
+  -d '{"prompt":"Lee el manual de referencia y estas fuentes técnicas.\n\n<PEGAR_MANUAL>","provider":"ollama"}' $A/v1/ask
+
+# (5) Modelo forzado: una sola llamada, aunque el prompt sea complejo.
 curl -s $J -H "Authorization: Bearer $TOK" \
   -d '{"prompt":"Di hola en una frase","provider":"ollama","model":"qwen2.5-coder:14b"}' $A/v1/ask
 ```
 
-`tier` se guarda en la traza y no elige el modelo. Adjuntos con `provider=ollama`: `422 ollama_no_attachments` (la extracción es de `mode=allin`). La respuesta trae `provider: "ollama"`; en `requests.key_source` queda `local`. Coste estimado `0`.
+`tier` se guarda en la traza y no elige el modelo. Adjuntos con `provider=ollama`: `422 ollama_no_attachments`. No hay OCR en esa ruta: la extracción multimodal es de `mode=allin`. La respuesta trae `provider: "ollama"`; en `requests.key_source` queda `local`. Coste estimado `0`.
 
 ### Orquestador híbrido (`mode=allin`, alias `provider=allin`)
 
@@ -245,20 +269,22 @@ Etapas (se saltan si no hacen falta):
 
 1. **Adjuntos** — OCR / texto de PDF con el mismo motor que `/v1/ocr`. Los modelos locales reciben solo texto. `provider=ollama` sigue rechazando adjuntos; aquí sí se aceptan.
 2. **Web** — solo si el prompt pide datos actuales (p. ej. «busca en Google», «latest version», «documentación reciente» o una URL `http(s)`). Una llamada a Gemini con Google Search grounding o, si no hay clave Gemini, a OpenRouter con el plugin web (slug del `model_catalog`, keypool). Si falla, se sigue sin resumen.
-3. **DeepSeek local** (`ALLIN_REASON_MODEL`) — tarea compleja, o cuando hubo texto de adjunto y resumen web.
-4. **Qwen local** (`ALLIN_CODE_MODEL`) — cuando hace falta código. Si la etapa 3 corrió, recibe el plan.
-5. **Atajo** — sin adjuntos, sin web y complejidad baja: una sola llamada local (Qwen si es código, DeepSeek si es lógica). No encadena etapas.
+3. **Contexto local** — DeepSeek (`ALLIN_REASON_MODEL`) si el razonamiento es duro y el contexto cabe. Mistral Nemo (`ALLIN_LONGCTX_MODEL`) si hay que leer un contexto masivo (prompt, OCR o resumen web ~>8k tokens, o un manual / varias fuentes).
+4. **Qwen local** (`ALLIN_CODE_MODEL`) — cuando hace falta código. Si la etapa 3 corrió, recibe el plan o la lectura.
+5. **Informe** — Llama 3.1 (`ALLIN_NLP_MODEL`) redacta el informe cuando OCR, web o un plan seguido de código dejaron trabajo intermedio. No corre en el atajo de una sola llamada, ni cuando pides `json_schema` (el contrato lo cumple la etapa anterior). Si Llama falla, el informe cae a la cascada; si la cascada también falla, se devuelve el resultado previo.
 
-Si una llamada a Ollama falla (timeout, conexión o salida que no cumple `json_schema`), esa etapa cae a la cascada Gemini/OpenRouter para no dejar la petición colgada. `models_chain` lista lo que corrió, por ejemplo `allin:ocr`, `allin:web`, `gemini:…`, `ollama:deepseek-r1:14b`, `ollama:qwen2.5-coder:14b`, o los peers de la cascada si hubo fallback. Si el texto final lo escribió un modelo local, `provider` es `allin`; si lo escribió la cascada, `provider` es `gemini` u `openrouter`.
+**Atajo** — sin adjuntos, sin web y complejidad baja: una sola llamada local (Qwen si es código, Llama si es texto, Mistral Nemo si el prompt ya es largo, DeepSeek en el resto). Sin informe.
+
+Si una llamada a Ollama falla (timeout, conexión o salida que no cumple `json_schema`), esa etapa cae a la cascada Gemini/OpenRouter. `models_chain` lista lo que corrió, por ejemplo `allin:ocr`, `allin:web`, `gemini:…`, `ollama:deepseek-r1:14b`, `ollama:qwen2.5-coder:14b`, `ollama:llama3.1:8b`, o los peers de la cascada si hubo fallback. Si el texto final lo escribió un modelo local, `provider` es `allin`; si lo escribió la cascada, `provider` es `gemini` u `openrouter`.
 
 ```bash
-# (4) Pipeline híbrido: PDF + web + razonamiento + código.
+# (6) Pipeline híbrido: PDF + web + razonamiento + código + informe Llama.
 # Sustituye <BASE64> por el PDF (base64, sin prefijo data:).
 curl -s $J -H "Authorization: Bearer $TOK" \
   -d '{"mode":"allin","prompt":"Busca en Google la documentación reciente de los deadlocks de PostgreSQL y escribe el código SQL que evita el interbloqueo.","attachments":[{"mime":"application/pdf","filename":"traza.pdf","data_base64":"<BASE64>"}]}' \
   $A/v1/ask
 
-# Alias equivalente (no es la ruta ollama):
+# Alias equivalente (no es la ruta ollama; una sola llamada local si el prompt es trivial):
 curl -s $J -H "Authorization: Bearer $TOK" \
   -d '{"prompt":"Di hola en una frase","provider":"allin"}' $A/v1/ask
 ```
@@ -292,7 +318,7 @@ Variables que lee la API (`api/app/config.py` → `api/app/mailer.py`): `ASKBOX_
 
 ## Diseño (resumen)
 
-- `api/app/llm/`: `router.py` (caché → tier → peers same-class en todos los proveedores con clave → bajada de tier; `provider=ollama` 100 % local sin cascada; `mode=allin` delega en `allin.py`), `providers/` (gemini, openrouter, ollama), `ollama_local.py`, `heuristics.py`, `keypool.py`, `cache.py`, `catalog.py` (`peer_chain`).
+- `api/app/llm/`: `router.py` (caché → tier → peers same-class en todos los proveedores con clave → bajada de tier; `provider=ollama` 100 % local sin cascada; `mode=allin` delega en `allin.py`), `providers/` (gemini, openrouter, ollama), `ollama_local.py`, `heuristics.py` (código, razonamiento, NLP, contexto largo), `keypool.py`, `cache.py`, `catalog.py` (`peer_chain`).
 - Modelos y cadenas en la tabla `model_catalog` (seeds/migraciones en `api/app/migrations/`); ajustar `enabled`, `priority`, `tier` y costes en BD (o nueva migración), no en código.
 - Seguridad: AES-256-GCM con AAD `proyecto:proveedor`, nonce aleatorio, `key_version`; la API nunca devuelve claves; logs sin prompts (solo longitud y hash truncado).
 - Límites: prompt ≤ 20000 chars, `max_output_tokens` ≤ 8192, rate limit Redis (`ASKBOX_ASK_RATE_PER_MIN`, 30/min por usuario, token `ab_live_` y proyecto en `/v1/ask`; login 10/min por IP).

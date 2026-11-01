@@ -26,6 +26,10 @@ def planned_models(prompt: str) -> list[str]:
         return [settings.ollama_reason_model, settings.allin_code_model]
     if kind == "reason":
         return [settings.ollama_reason_model]
+    if kind == "nlp":
+        return [settings.ollama_nlp_model]
+    if kind == "longctx":
+        return [settings.ollama_longctx_model]
     return [settings.allin_code_model]
 
 
