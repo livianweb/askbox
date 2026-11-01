@@ -65,7 +65,15 @@ def _to_openrouter_messages(messages: list[dict]) -> list[dict]:
     return out
 
 
-async def complete(messages: list[dict], *, api_key: str, model: str, max_tokens: int, temperature: float = 0.4) -> dict:
+async def complete(
+    messages: list[dict],
+    *,
+    api_key: str,
+    model: str,
+    max_tokens: int,
+    temperature: float = 0.4,
+    web_search: bool = False,
+) -> dict:
     or_messages = _to_openrouter_messages(messages)
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -74,6 +82,9 @@ async def complete(messages: list[dict], *, api_key: str, model: str, max_tokens
         "Content-Type": "application/json",
     }
     payload = {"model": model, "messages": or_messages, "temperature": temperature, "max_tokens": max_tokens}
+    if web_search:
+        # Plugin web de OpenRouter (etapa web de mode=allin). El slug sale del catálogo.
+        payload["plugins"] = [{"id": "web", "max_results": 3}]
     try:
         async with httpx.AsyncClient(timeout=settings.provider_timeout) as client:
             resp = await client.post(OPENROUTER_API, headers=headers, json=payload)

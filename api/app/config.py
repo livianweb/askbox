@@ -78,10 +78,20 @@ class Settings:
     # LLM
     provider_timeout: float = float(os.getenv("ASKBOX_PROVIDER_TIMEOUT", "30") or 30)
     max_models_per_provider: int = _int("ASKBOX_MAX_MODELS_PER_PROVIDER", 3)
-    # Ollama local (solo si el cliente pide provider=ollama o model=ollama/…). No entra en la cascada.
+    # Ollama local (provider=ollama o model=ollama/…). No entra en la cascada ni sale a internet.
+    # allin reutiliza los mismos modelos locales y, si fallan, sí puede usar la cascada.
     ollama_base_url: str = (os.getenv("OLLAMA_BASE_URL") or "http://ollama:11434").rstrip("/")
     ollama_model: str = (os.getenv("OLLAMA_MODEL") or "qwen2.5-coder:14b").strip()
     ollama_timeout: float = float(os.getenv("OLLAMA_TIMEOUT", "120") or 120)
+    ollama_reason_model: str = (
+        os.getenv("OLLAMA_REASON_MODEL") or os.getenv("ALLIN_REASON_MODEL") or "deepseek-r1:14b"
+    ).strip()
+    allin_reason_model: str = (
+        os.getenv("ALLIN_REASON_MODEL") or os.getenv("OLLAMA_REASON_MODEL") or "deepseek-r1:14b"
+    ).strip()
+    allin_code_model: str = (
+        os.getenv("ALLIN_CODE_MODEL") or os.getenv("OLLAMA_MODEL") or "qwen2.5-coder:14b"
+    ).strip()
     openrouter_referer: str = os.getenv("ASKBOX_OPENROUTER_REFERER", "https://askbox.local")
     openrouter_title: str = os.getenv("ASKBOX_OPENROUTER_TITLE", "askbox")
 

@@ -51,13 +51,17 @@ El runtime **solo** lee filas con `enabled = true` (`catalog.peer_chain`, `cost_
 2. No añadir slugs `gemini-*` / `*:free` como constantes en `router.py` o providers para runtime de producción.
 3. Migración o seed SQL documentada; opcionalmente datos de prueba solo en `tests/`.
 
-## Ruta explícita a Ollama (fuera de la cascada)
+## Ruta explícita a Ollama (fuera de la cascada, 100 % local)
 
-`provider=ollama` o `model=ollama/<slug>` en `POST /v1/ask` y `/v1/ask/stream` llama solo a Ollama (`OLLAMA_BASE_URL`, default `http://ollama:11434`, modelo `OLLAMA_MODEL`). No usa keypool, `model_catalog` ni peers Gemini/OpenRouter, y un fallo **no** cae a la cascada. Sin ese parámetro, el orden de abajo no cambia. No añadir Ollama a `PROVIDER_ORDER` ni al `CHECK` de `model_catalog` hasta que se pida la cascada automática.
+`provider=ollama` o `model=ollama/<slug>` en `POST /v1/ask` y `/v1/ask/stream` llama solo a Ollama (`OLLAMA_BASE_URL`, default `http://ollama:11434`). No usa keypool, `model_catalog`, Gemini, OpenRouter ni búsqueda web, y un fallo **no** cae a la cascada. Sin modelo (o con `auto`), elige en local: código habitual → `OLLAMA_MODEL` / `ALLIN_CODE_MODEL`; bugs, arquitectura o lógica abstracta → `OLLAMA_REASON_MODEL`; desarrollo complejo (las dos) → DeepSeek y luego Qwen, todo local (`models_chain`). Un slug concreto es una sola llamada a ese modelo. No añadir Ollama a `PROVIDER_ORDER` ni al `CHECK` de `model_catalog`.
+
+## `mode=allin` (híbrido; alias `provider=allin`)
+
+No es la ruta Ollama. Puede extraer adjuntos, pedir un resumen web (Gemini con grounding u OpenRouter con plugin web, claves del keypool) y llamar a los mismos modelos locales. Si Ollama falla, esa etapa cae a la cascada de abajo. Sin `provider=ollama` ni `mode`/`provider=allin`, el orden de la cascada no cambia.
 
 ## Orden obligatorio de decisión
 
-Por cada `POST /v1/ask` **sin** ruta explícita a Ollama, respetar este orden:
+Por cada `POST /v1/ask` **sin** ruta explícita a Ollama y **sin** `mode=allin` / `provider=allin`, respetar este orden:
 
 1. **Caché** — clave `sha256(project_id + prompt_rendered + tier + max_tokens + json_schema)` en Redis; TTL por proyecto.
 2. **Cooldown de clave** — excluir filas `api_keys` con `cooldown_until > now`; pool por proyecto.
@@ -89,7 +93,10 @@ Heredar el estilo de agentshop-x `gemini.py`:
 | `api/app/llm/router.py` | Orquestación tier → cadena → respuesta unificada |
 | `api/app/llm/catalog.py` | `peer_chain`, `TIER_CLASSES`, orden cross-provider |
 | `api/app/llm/providers/` | Gemini, OpenRouter; Ollama solo si el cliente lo pide (`ollama.py`) |
-| `api/app/llm/ollama_route.py` | Parseo de `provider` / `model` explícitos |
+| `api/app/llm/ollama_route.py` | Parseo de `provider` / `model` explícitos (`auto` no es un slug de Ollama) |
+| `api/app/llm/ollama_local.py` | Ejecución 100 % local de `provider=ollama` (sin nube) |
+| `api/app/llm/allin.py` | Orquestador híbrido `mode=allin` / `provider=allin` |
+| `api/app/llm/heuristics.py` | Web, complejidad y código (tests sin red) |
 | `api/app/llm/keypool.py` | Selección de clave, cooldown, fallos consecutivos |
 | `api/app/llm/cache.py` | Lectura/escritura Redis de respuestas |
 

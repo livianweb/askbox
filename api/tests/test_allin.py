@@ -1,0 +1,707 @@
+"""Heurísticas y orquestación: Ollama local (sin nube) frente a mode=allin (híbrido)."""
+from __future__ import annotations
+
+import ast
+import inspect
+import os
+import unittest
+from unittest.mock import AsyncMock, patch
+
+os.environ.setdefault("ASKBOX_MASTER_KEY", "00" * 32)
+
+from pydantic import ValidationError  # noqa: E402
+
+from app.config import settings  # noqa: E402
+from app.llm import ollama_local  # noqa: E402
+from app.llm.attachments import NormalizedAttachment  # noqa: E402
+from app.llm.errors import LLMError  # noqa: E402
+from app.llm.heuristics import (  # noqa: E402
+    allin_shape,
+    complex_development,
+    is_high_complexity,
+    needs_code,
+    needs_web,
+    ollama_auto_kind,
+)
+from app.llm.keypool import KeyHandle  # noqa: E402
+from app.llm.ollama_route import parse_explicit_provider  # noqa: E402
+from app.llm.providers import gemini, openrouter  # noqa: E402
+from app.llm.router import AskFailure, ask  # noqa: E402
+from app.routers.ask import AskIn  # noqa: E402
+
+
+class HeuristicTests(unittest.TestCase):
+    def test_web_is_conservative(self):
+        self.assertTrue(needs_web("Busca en Google la última versión de FastAPI"))
+        self.assertTrue(needs_web("search the web for the changelog"))
+        self.assertTrue(needs_web("latest version of postgres"))
+        self.assertTrue(needs_web("versión más reciente del driver"))
+        self.assertTrue(needs_web("mira la documentación reciente de Redis"))
+        self.assertTrue(needs_web("recent docs of the SDK"))
+        self.assertTrue(needs_web("fuente https://example.com/docs/v2"))
+        self.assertFalse(needs_web("Di hola en una frase"))
+        self.assertFalse(needs_web("cómo configurar google cloud storage"))
+        self.assertFalse(needs_web("escribe una función que sume dos enteros"))
+        self.assertFalse(needs_web("explica el interbloqueo de dos transacciones"))
+
+    def test_complexity_and_code_are_separate(self):
+        self.assertTrue(is_high_complexity("Explica el interbloqueo de dos transacciones"))
+        self.assertTrue(is_high_complexity("module architecture of the checkout"))
+        self.assertTrue(is_high_complexity("hay un bug complejo intermitente"))
+        self.assertTrue(is_high_complexity("razona la lógica abstracta del planificador"))
+        self.assertTrue(is_high_complexity("race condition en el worker"))
+        self.assertFalse(is_high_complexity("Di hola en una frase"))
+        self.assertFalse(is_high_complexity("SELECT name FROM users WHERE active = 1"))
+        self.assertFalse(is_high_complexity("maquetación del header en PrestaShop"))
+
+        self.assertTrue(needs_code("Escribe una función que sume dos enteros"))
+        self.assertTrue(needs_code("SELECT name FROM users WHERE active = 1"))
+        self.assertTrue(needs_code("consulta sql de los pedidos"))
+        self.assertTrue(needs_code("corrige la sintaxis de este hook de PrestaShop"))
+        self.assertTrue(needs_code("maqueta la ficha de producto"))
+        self.assertFalse(needs_code("select the option from the menu and explain it"))
+        self.assertFalse(needs_code("Explica el interbloqueo de dos transacciones que se esperan"))
+        self.assertFalse(needs_code("Di hola en una frase"))
+
+    def test_ollama_auto_kinds(self):
+        self.assertEqual(ollama_auto_kind("Di hola en una frase"), "code")
+        self.assertEqual(ollama_auto_kind("SELECT id FROM orders"), "code")
+        self.assertEqual(ollama_auto_kind("hook de prestashop displayHeader"), "code")
+        self.assertEqual(
+            ollama_auto_kind("Explica el interbloqueo de dos transacciones que se esperan mutuamente"),
+            "reason",
+        )
+        self.assertEqual(
+            ollama_auto_kind("Hay un deadlock y un bug complejo. Escribe el código SQL que lo corrige."),
+            "pipeline",
+        )
+        self.assertTrue(
+            complex_development("Hay un deadlock y un bug complejo. Escribe el código SQL que lo corrige.")
+        )
+
+    def test_allin_simple_shape_skips_chain(self):
+        self.assertEqual(
+            allin_shape("Di hola", has_attachments=False, web_needed=False, doc_and_web=False),
+            "simple",
+        )
+        self.assertEqual(
+            allin_shape(
+                "Escribe una función que sume",
+                has_attachments=False,
+                web_needed=False,
+                doc_and_web=False,
+            ),
+            "simple",
+        )
+        self.assertEqual(
+            allin_shape("qué dice", has_attachments=True, web_needed=False, doc_and_web=False),
+            "reason",
+        )
+        self.assertEqual(
+            allin_shape(
+                "Hay un deadlock. Escribe el código SQL.",
+                has_attachments=False,
+                web_needed=True,
+                doc_and_web=False,
+            ),
+            "plan_code",
+        )
+        self.assertEqual(
+            allin_shape("hola", has_attachments=True, web_needed=True, doc_and_web=True),
+            "reason",
+        )
+
+
+class BoundaryTests(unittest.TestCase):
+    def test_parse_does_not_treat_allin_as_ollama(self):
+        with self.assertRaises(ValueError):
+            parse_explicit_provider("allin", None)
+
+    def test_askin_aliases_and_priority(self):
+        by_mode = AskIn(prompt="hola", mode="Allin")
+        self.assertEqual(by_mode.mode, "allin")
+        self.assertIsNone(by_mode.provider)
+        self.assertIsNone(by_mode.model)
+
+        by_provider = AskIn(prompt="hola", provider="allin", model="qwen2.5-coder:14b")
+        self.assertEqual(by_provider.mode, "allin")
+        self.assertIsNone(by_provider.provider)
+        self.assertIsNone(by_provider.model)
+
+        both = AskIn(prompt="hola", mode="allin", provider="ollama", model="llama3.2:3b")
+        self.assertEqual(both.mode, "allin")
+        self.assertIsNone(both.provider)
+
+        forced = AskIn(prompt="hola", provider="ollama", model="deepseek-r1:14b")
+        self.assertIsNone(forced.mode)
+        self.assertEqual((forced.provider, forced.model), ("ollama", "deepseek-r1:14b"))
+
+        with self.assertRaises(ValidationError):
+            AskIn(prompt="hola", mode="turbo")
+
+        body = AskIn(
+            prompt="lee",
+            mode="allin",
+            attachments=[{"mime": "image/png", "data_base64": "aaaa", "filename": "a.png"}],
+        )
+        self.assertEqual(len(body.attachments or []), 1)
+        self.assertIsNone(body.provider)
+
+    def test_ollama_local_module_has_no_cloud_imports(self):
+        tree = ast.parse(inspect.getsource(ollama_local))
+        names: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                names.append(node.module or "")
+                names.extend(alias.name for alias in node.names)
+        blob = " ".join(names).lower()
+        self.assertNotIn("gemini", blob)
+        self.assertNotIn("openrouter", blob)
+        self.assertNotIn("keypool", blob)
+        self.assertNotIn("allin", blob)
+
+
+def _project() -> dict:
+    return {"id": "p1", "cache_ttl_seconds": 0, "default_tier": "auto", "allow_system_keys": True}
+
+
+def _ok(model: str, text: str = "ok") -> dict:
+    return {"text": text, "model": model, "input_tokens": 1, "output_tokens": 2}
+
+
+class _RecordingComplete:
+    def __init__(self, result=None, error=None):
+        self.calls: list[tuple[str, list[dict]]] = []
+        self._result = result
+        self._error = error
+
+    async def __call__(self, messages, *, model, max_tokens, temperature=0.4):
+        self.calls.append((model, messages))
+        if self._error:
+            raise self._error
+        text = self._result
+        if text is None:
+            text = f"out:{model}"
+        return _ok(model, text)
+
+
+class OllamaLocalRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_simple_prompt_uses_qwen_and_never_cloud(self):
+        complete = _RecordingComplete()
+        cascade = AsyncMock(side_effect=AssertionError("la cascada no debe ejecutarse"))
+        web = AsyncMock(side_effect=AssertionError("ollama no busca en la web"))
+        with (
+            patch("app.llm.ollama_local.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+            patch("app.llm.allin.web_summary", web),
+            patch("app.llm.providers.gemini.complete", AsyncMock(side_effect=AssertionError("gemini"))),
+            patch("app.llm.providers.openrouter.complete", AsyncMock(side_effect=AssertionError("openrouter"))),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(),
+                messages=[{"role": "user", "content": "Di hola en una frase"}],
+                tier="auto",
+                max_tokens=64,
+                provider="ollama",
+            )
+        cascade.assert_not_called()
+        web.assert_not_called()
+        self.assertEqual([c[0] for c in complete.calls], [settings.allin_code_model])
+        self.assertEqual(res["provider"], "ollama")
+        self.assertEqual(res["key_source"], "local")
+        self.assertEqual(res["models_chain"], [f"ollama:{settings.allin_code_model}"])
+        self.assertEqual(res["estimated_cost_usd"], 0.0)
+
+    async def test_complex_logic_uses_deepseek_only(self):
+        complete = _RecordingComplete()
+        cascade = AsyncMock(side_effect=AssertionError("sin nube"))
+        with (
+            patch("app.llm.ollama_local.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(),
+                messages=[{
+                    "role": "user",
+                    "content": "Explica el interbloqueo de dos transacciones que se esperan mutuamente",
+                }],
+                tier="fast",
+                max_tokens=128,
+                provider="ollama",
+                model="auto",
+            )
+        cascade.assert_not_called()
+        self.assertEqual([c[0] for c in complete.calls], [settings.ollama_reason_model])
+        self.assertEqual(res["provider"], "ollama")
+        self.assertEqual(res["models_chain"], [f"ollama:{settings.ollama_reason_model}"])
+
+    async def test_complex_development_is_local_pipeline(self):
+        complete = _RecordingComplete()
+        cascade = AsyncMock(side_effect=AssertionError("sin nube"))
+        with (
+            patch("app.llm.ollama_local.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(),
+                messages=[{
+                    "role": "user",
+                    "content": "Hay un deadlock y un bug complejo. Escribe el código SQL que lo corrige.",
+                }],
+                tier="fast",
+                max_tokens=256,
+                provider="ollama",
+            )
+        cascade.assert_not_called()
+        self.assertEqual(
+            [c[0] for c in complete.calls],
+            [settings.ollama_reason_model, settings.allin_code_model],
+        )
+        self.assertIn("Plan de diseño:", complete.calls[1][1][-1]["content"])
+        self.assertEqual(
+            res["models_chain"],
+            [f"ollama:{settings.ollama_reason_model}", f"ollama:{settings.allin_code_model}"],
+        )
+        self.assertEqual(res["provider"], "ollama")
+        self.assertEqual(res["model_used"], settings.allin_code_model)
+
+    async def test_explicit_model_is_a_single_call(self):
+        complete = _RecordingComplete()
+        with patch("app.llm.ollama_local.ollama.complete", complete):
+            res = await ask(
+                None,
+                None,
+                project=_project(),
+                messages=[{
+                    "role": "user",
+                    "content": "Hay un deadlock y un bug complejo. Escribe el código SQL que lo corrige.",
+                }],
+                tier="fast",
+                max_tokens=64,
+                provider="ollama",
+                model="llama3.2:3b",
+            )
+        self.assertEqual([c[0] for c in complete.calls], ["llama3.2:3b"])
+        self.assertEqual(res["models_chain"], ["ollama:llama3.2:3b"])
+
+    async def test_local_failure_does_not_call_cloud(self):
+        complete = _RecordingComplete(error=LLMError("timeout", kind="retry"))
+        cascade = AsyncMock(side_effect=AssertionError("sin fallback"))
+        web = AsyncMock(side_effect=AssertionError("sin web"))
+        with (
+            patch("app.llm.ollama_local.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+            patch("app.llm.allin.web_summary", web),
+        ):
+            with self.assertRaises(AskFailure) as ctx:
+                await ask(
+                    None,
+                    None,
+                    project=_project(),
+                    messages=[{"role": "user", "content": "Di hola en una frase"}],
+                    tier="fast",
+                    max_tokens=32,
+                    provider="ollama",
+                )
+        cascade.assert_not_called()
+        web.assert_not_called()
+        self.assertEqual(ctx.exception.code, "provider_failed")
+        self.assertEqual(len(complete.calls), 1)
+
+
+class AllinRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_simple_logic_is_one_deepseek_call(self):
+        complete = _RecordingComplete()
+        extract = AsyncMock(side_effect=AssertionError("sin adjuntos no hay ocr"))
+        web = AsyncMock(side_effect=AssertionError("sin web"))
+        cascade = AsyncMock(side_effect=AssertionError("sin fallback"))
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.allin.extract_documents", extract),
+            patch("app.llm.allin.web_summary", web),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(),
+                messages=[{"role": "user", "content": "Di hola en una frase"}],
+                tier="auto",
+                max_tokens=32,
+                mode="allin",
+            )
+        extract.assert_not_called()
+        web.assert_not_called()
+        cascade.assert_not_called()
+        self.assertEqual([c[0] for c in complete.calls], [settings.allin_reason_model])
+        self.assertEqual(res["provider"], "allin")
+        self.assertEqual(res["models_chain"], [f"ollama:{settings.allin_reason_model}"])
+        self.assertNotIn("allin:ocr", res["models_chain"])
+        self.assertNotIn("allin:web", res["models_chain"])
+
+    async def test_simple_code_is_one_qwen_call(self):
+        complete = _RecordingComplete()
+        cascade = AsyncMock(side_effect=AssertionError("sin fallback"))
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(),
+                messages=[{"role": "user", "content": "Escribe una función que sume dos enteros"}],
+                tier="fast",
+                max_tokens=64,
+                provider="allin",
+            )
+        cascade.assert_not_called()
+        self.assertEqual([c[0] for c in complete.calls], [settings.allin_code_model])
+        self.assertEqual(res["provider"], "allin")
+
+    async def test_attachments_run_ocr_then_reason(self):
+        complete = _RecordingComplete()
+        extract = AsyncMock(return_value="[a.png p1]\nFACTURA 10")
+        web = AsyncMock(side_effect=AssertionError("este prompt no pide web"))
+        att = NormalizedAttachment(mime="image/png", data=b"png", sha256="abc", size=3, filename="a.png")
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.allin.extract_documents", extract),
+            patch("app.llm.allin.web_summary", web),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(),
+                messages=[{"role": "user", "content": "qué pone en el documento"}],
+                tier="fast",
+                max_tokens=64,
+                mode="allin",
+                normalized_attachments=[att],
+            )
+        extract.assert_awaited()
+        web.assert_not_called()
+        self.assertEqual(res["models_chain"][0], "allin:ocr")
+        self.assertIn("FACTURA 10", complete.calls[0][1][-1]["content"])
+        self.assertEqual(complete.calls[0][0], settings.allin_reason_model)
+        self.assertTrue(all("attachments" not in msg for msg in complete.calls[0][1]))
+
+    async def test_web_then_plan_then_code(self):
+        complete = _RecordingComplete()
+        web = AsyncMock(return_value={
+            "text": "PostgreSQL 16 documenta lock_timeout",
+            "models_chain": ["gemini:peer"],
+            "attempts": 1,
+            "input_tokens": 3,
+            "output_tokens": 4,
+            "estimated_cost_usd": 0.0,
+            "key_id": None,
+            "key_source": "system",
+        })
+        cascade = AsyncMock(side_effect=AssertionError("local respondió"))
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.allin.web_summary", web),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(),
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Busca en Google la documentación reciente de los deadlocks "
+                        "y escribe el código SQL que evita el interbloqueo."
+                    ),
+                }],
+                tier="balanced",
+                max_tokens=200,
+                mode="allin",
+            )
+        cascade.assert_not_called()
+        web.assert_awaited()
+        self.assertEqual(
+            [c[0] for c in complete.calls],
+            [settings.allin_reason_model, settings.allin_code_model],
+        )
+        self.assertIn("lock_timeout", complete.calls[0][1][-1]["content"])
+        self.assertIn("Plan de diseño:", complete.calls[1][1][-1]["content"])
+        self.assertEqual(res["provider"], "allin")
+        self.assertEqual(res["model_used"], settings.allin_code_model)
+        self.assertEqual(
+            res["models_chain"][:3],
+            ["allin:web", "gemini:peer", f"ollama:{settings.allin_reason_model}"],
+        )
+
+    async def test_web_failure_still_answers_locally(self):
+        complete = _RecordingComplete(result="sin web")
+        web = AsyncMock(side_effect=LLMError("grounding caído", kind="retry"))
+        cascade = AsyncMock(side_effect=AssertionError("no hace falta la cascada"))
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.allin.web_summary", web),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(),
+                messages=[{"role": "user", "content": "Busca en Google la latest version de Redis"}],
+                tier="fast",
+                max_tokens=64,
+                mode="allin",
+            )
+        cascade.assert_not_called()
+        self.assertEqual(res["text"], "sin web")
+        self.assertNotIn("allin:web", res["models_chain"])
+        self.assertEqual(res["provider"], "allin")
+
+    async def test_local_failure_falls_back_to_cascade(self):
+        complete = _RecordingComplete(error=LLMError("connection refused", kind="retry"))
+        cascade = AsyncMock(return_value={
+            "text": "desde la cascada",
+            "provider": "gemini",
+            "model_used": "gemini-test",
+            "models_chain": ["gemini:gemini-test"],
+            "attempts": 2,
+            "input_tokens": 4,
+            "output_tokens": 5,
+            "estimated_cost_usd": 0.02,
+            "key_id": None,
+            "key_source": "system",
+            "cache_hit": False,
+            "tier_used": "fast",
+        })
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(),
+                messages=[{"role": "user", "content": "Di hola en una frase"}],
+                tier="fast",
+                max_tokens=32,
+                mode="allin",
+                provider="ollama",
+            )
+        cascade.assert_awaited()
+        self.assertEqual(res["text"], "desde la cascada")
+        self.assertEqual(res["provider"], "gemini")
+        self.assertEqual(res["model_used"], "gemini-test")
+        self.assertIn(f"ollama:{settings.allin_reason_model}", res["models_chain"])
+        self.assertIn("gemini:gemini-test", res["models_chain"])
+        self.assertGreaterEqual(res["attempts"], 2)
+
+    async def test_schema_mismatch_also_falls_back(self):
+        complete = _RecordingComplete(result="no soy json")
+        cascade = AsyncMock(return_value={
+            "text": '{"ok": true}',
+            "provider": "openrouter",
+            "model_used": "peer",
+            "models_chain": ["openrouter:peer"],
+            "attempts": 1,
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "estimated_cost_usd": 0.0,
+            "key_id": "k1",
+            "key_source": "project",
+            "cache_hit": False,
+            "tier_used": "fast",
+        })
+        schema = {"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean"}}}
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(),
+                messages=[{"role": "user", "content": "Di hola en una frase"}],
+                tier="fast",
+                max_tokens=32,
+                mode="allin",
+                json_schema=schema,
+            )
+        self.assertEqual(res["text"], '{"ok": true}')
+        self.assertEqual(res["provider"], "openrouter")
+        kwargs = cascade.await_args.kwargs
+        self.assertEqual(kwargs["json_schema"], schema)
+        self.assertEqual(kwargs["ttl"], 0)
+
+
+class ExtractAndWebTests(unittest.IsolatedAsyncioTestCase):
+    async def test_extract_joins_ocr_lines(self):
+        from app.llm.allin import extract_documents
+
+        class Page:
+            lines = [{"text": "Hola"}, {"text": "mundo"}]
+
+        att = NormalizedAttachment(mime="image/jpeg", data=b"\xff\xd8\xff", sha256="a", size=3, filename="scan.jpg")
+        with patch("app.llm.allin.ocr_engine.run_limited", AsyncMock(return_value=Page())):
+            text = await extract_documents([att])
+        self.assertIn("Hola", text)
+        self.assertIn("mundo", text)
+        self.assertIn("scan.jpg", text)
+
+    async def test_extract_failure_is_empty(self):
+        from app.llm.allin import extract_documents
+
+        att = NormalizedAttachment(mime="image/png", data=b"x", sha256="b", size=1, filename=None)
+        with patch("app.llm.allin.ocr_engine.run_limited", AsyncMock(side_effect=RuntimeError("tesseract"))):
+            text = await extract_documents([att])
+        self.assertEqual(text, "")
+
+    async def test_web_prefers_gemini_grounding(self):
+        from app.llm.allin import web_summary
+
+        handle = KeyHandle("gemini", "secret-value", None, "system")
+        gemini_complete = AsyncMock(return_value={"text": "resumen tecnico", "model": "peer-g", "input_tokens": 2, "output_tokens": 3})
+        or_complete = AsyncMock(side_effect=AssertionError("no debía llamar a OpenRouter"))
+
+        async def candidates(pool, project, provider):
+            return [handle] if provider == "gemini" else []
+
+        async def peers(pool, tier, providers, limit, require_vision=False):
+            return [(providers[0], {"slug": "peer-g", "max_output_tokens": 1024})]
+
+        with (
+            patch("app.llm.allin.keypool.candidates", candidates),
+            patch("app.llm.allin.catalog.peer_chain", peers),
+            patch("app.llm.allin.gemini.complete", gemini_complete),
+            patch("app.llm.allin.openrouter.complete", or_complete),
+            patch("app.llm.allin.catalog.cost_for_model", AsyncMock(return_value=(0.0, 0.0))),
+            patch("app.llm.allin.keypool.mark_success", AsyncMock()),
+        ):
+            out = await web_summary(object(), _project(), "latest version of fastapi", max_tokens=100)
+        self.assertEqual(out["text"], "resumen tecnico")
+        self.assertTrue(gemini_complete.await_args.kwargs["grounding"])
+        self.assertEqual(out["models_chain"], ["gemini:peer-g"])
+        or_complete.assert_not_called()
+        self.assertNotIn("secret-value", str(out))
+
+    async def test_web_falls_back_to_openrouter_plugin(self):
+        from app.llm.allin import web_summary
+
+        handle_g = KeyHandle("gemini", "g", None, "system")
+        handle_o = KeyHandle("openrouter", "o", "key-1", "project")
+
+        async def candidates(pool, project, provider):
+            return [handle_g] if provider == "gemini" else [handle_o]
+
+        async def peers(pool, tier, providers, limit, require_vision=False):
+            slug = "peer-g" if providers[0] == "gemini" else "peer-o"
+            return [(providers[0], {"slug": slug, "max_output_tokens": 800})]
+
+        gemini_complete = AsyncMock(side_effect=LLMError("sin grounding", kind="retry"))
+        or_complete = AsyncMock(return_value={"text": "via openrouter", "model": "peer-o", "input_tokens": 1, "output_tokens": 1})
+        with (
+            patch("app.llm.allin.keypool.candidates", candidates),
+            patch("app.llm.allin.catalog.peer_chain", peers),
+            patch("app.llm.allin.gemini.complete", gemini_complete),
+            patch("app.llm.allin.openrouter.complete", or_complete),
+            patch("app.llm.allin.catalog.cost_for_model", AsyncMock(return_value=(1.0, 2.0))),
+            patch("app.llm.allin.keypool.mark_success", AsyncMock()),
+        ):
+            out = await web_summary(object(), _project(), "busca en Google el changelog", max_tokens=80)
+        self.assertEqual(out["text"], "via openrouter")
+        self.assertTrue(or_complete.await_args.kwargs["web_search"])
+        self.assertEqual(out["provider"], "openrouter")
+        self.assertEqual(out["key_source"], "project")
+
+
+class ProviderPayloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_gemini_grounding_is_opt_in(self):
+        seen = {}
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, headers=None, json=None):
+                seen["json"] = json
+                return _FakeResp(200, {
+                    "candidates": [{"content": {"parts": [{"text": "hola"}]}}],
+                    "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1},
+                })
+
+        with patch("app.llm.providers.gemini.httpx.AsyncClient", FakeClient):
+            await gemini.complete(
+                [{"role": "user", "content": "hola"}],
+                api_key="k",
+                model="m",
+                max_tokens=16,
+            )
+            self.assertNotIn("tools", seen["json"])
+            await gemini.complete(
+                [{"role": "user", "content": "hola"}],
+                api_key="k",
+                model="m",
+                max_tokens=16,
+                grounding=True,
+            )
+        self.assertEqual(seen["json"]["tools"], [{"google_search": {}}])
+
+    async def test_openrouter_web_plugin_is_opt_in(self):
+        seen = {}
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, headers=None, json=None):
+                seen["json"] = json
+                return _FakeResp(200, {
+                    "choices": [{"message": {"content": "hola"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                })
+
+        with patch("app.llm.providers.openrouter.httpx.AsyncClient", FakeClient):
+            await openrouter.complete(
+                [{"role": "user", "content": "hola"}],
+                api_key="k",
+                model="m",
+                max_tokens=16,
+            )
+            self.assertNotIn("plugins", seen["json"])
+            await openrouter.complete(
+                [{"role": "user", "content": "hola"}],
+                api_key="k",
+                model="m",
+                max_tokens=16,
+                web_search=True,
+            )
+        self.assertEqual(seen["json"]["plugins"], [{"id": "web", "max_results": 3}])
+        self.assertEqual(seen["json"]["model"], "m")
+
+
+class _FakeResp:
+    def __init__(self, status, payload):
+        self.status_code = status
+        self._payload = payload
+
+    def json(self):
+        return self._payload

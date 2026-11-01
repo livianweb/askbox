@@ -22,9 +22,10 @@ class RouteParseTests(unittest.TestCase):
         self.assertIsNone(parse_explicit_provider(None, None))
         self.assertIsNone(parse_explicit_provider("  ", ""))
 
-    def test_provider_uses_default_model(self):
-        with patch("app.llm.ollama_route.settings.ollama_model", "qwen2.5-coder:14b"):
-            self.assertEqual(parse_explicit_provider("Ollama", None), ("ollama", "qwen2.5-coder:14b"))
+    def test_provider_without_model_is_auto(self):
+        self.assertEqual(parse_explicit_provider("Ollama", None), ("ollama", "auto"))
+        self.assertEqual(parse_explicit_provider("ollama", "auto"), ("ollama", "auto"))
+        self.assertEqual(parse_explicit_provider(None, "ollama/auto"), ("ollama", "auto"))
 
     def test_prefix_implies_provider(self):
         self.assertEqual(
@@ -58,11 +59,11 @@ class AskPayloadTests(unittest.TestCase):
         self.assertIsNone(body.model)
         self.assertEqual(body.tier, "auto")
 
-    def test_provider_fills_default_model(self):
-        with patch("app.llm.ollama_route.settings.ollama_model", "qwen2.5-coder:14b"):
-            body = AskIn(prompt="hola", provider="ollama")
+    def test_provider_without_model_stays_auto(self):
+        body = AskIn(prompt="hola", provider="ollama")
         self.assertEqual(body.provider, "ollama")
-        self.assertEqual(body.model, "qwen2.5-coder:14b")
+        self.assertEqual(body.model, "auto")
+        self.assertIsNone(body.mode)
 
     def test_prefixed_model(self):
         body = AskIn(prompt="hola", model="ollama/qwen2.5-coder:14b")
@@ -180,7 +181,7 @@ class RouterOllamaTests(unittest.IsolatedAsyncioTestCase):
         )
         cascade = AsyncMock(side_effect=AssertionError("la cascada no debe ejecutarse"))
         with (
-            patch("app.llm.router.ollama.complete", complete),
+            patch("app.llm.ollama_local.ollama.complete", complete),
             patch("app.llm.router._cascade", cascade),
         ):
             res = await ask(
@@ -224,7 +225,7 @@ class RouterOllamaTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         with (
-            patch("app.llm.router.ollama.complete", complete),
+            patch("app.llm.ollama_local.ollama.complete", complete),
             patch("app.llm.router._cascade", cascade),
         ):
             res = await ask(
@@ -241,7 +242,7 @@ class RouterOllamaTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_attachments_do_not_call_provider(self):
         complete = AsyncMock(side_effect=AssertionError("no debe llamar a Ollama"))
-        with patch("app.llm.router.ollama.complete", complete):
+        with patch("app.llm.ollama_local.ollama.complete", complete):
             with self.assertRaises(AskFailure) as ctx:
                 await ask(
                     None,
@@ -261,7 +262,7 @@ class RouterOllamaTests(unittest.IsolatedAsyncioTestCase):
         complete = AsyncMock(side_effect=LLMError("caído", kind="retry"))
         cascade = AsyncMock(side_effect=AssertionError("sin fallback"))
         with (
-            patch("app.llm.router.ollama.complete", complete),
+            patch("app.llm.ollama_local.ollama.complete", complete),
             patch("app.llm.router._cascade", cascade),
         ):
             with self.assertRaises(AskFailure) as ctx:
@@ -279,7 +280,7 @@ class RouterOllamaTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_schema_mismatch_is_failure(self):
         complete = AsyncMock(return_value={"text": "no soy json", "model": "qwen2.5-coder:14b", "input_tokens": 0, "output_tokens": 1})
-        with patch("app.llm.router.ollama.complete", complete):
+        with patch("app.llm.ollama_local.ollama.complete", complete):
             with self.assertRaises(AskFailure):
                 await ask(
                     None,

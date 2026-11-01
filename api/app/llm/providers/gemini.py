@@ -67,12 +67,23 @@ def _to_contents(messages: list[dict]) -> tuple[str, list[dict]]:
     return "\n\n".join(system_bits), contents
 
 
-async def complete(messages: list[dict], *, api_key: str, model: str, max_tokens: int, temperature: float = 0.4) -> dict:
+async def complete(
+    messages: list[dict],
+    *,
+    api_key: str,
+    model: str,
+    max_tokens: int,
+    temperature: float = 0.4,
+    grounding: bool = False,
+) -> dict:
     system, contents = _to_contents(messages)
     payload: dict = {
         "contents": contents,
         "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
     }
+    if grounding:
+        # Google Search grounding (etapa web de mode=allin). Sin esto el payload no cambia.
+        payload["tools"] = [{"google_search": {}}]
     if system:
         payload["systemInstruction"] = {"parts": [{"text": system}]}
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}

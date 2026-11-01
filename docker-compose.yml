@@ -9,9 +9,12 @@ services:
       ASKBOX_MASTER_KEY: ${ASKBOX_MASTER_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      # Ollama local (solo si el cliente manda provider=ollama). Hostname del servicio en esta red.
+      # Ollama local (provider=ollama, 100 % local) y modelos locales de mode=allin.
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:14b}
+      OLLAMA_REASON_MODEL: ${OLLAMA_REASON_MODEL:-deepseek-r1:14b}
+      ALLIN_CODE_MODEL: ${ALLIN_CODE_MODEL:-qwen2.5-coder:14b}
+      ALLIN_REASON_MODEL: ${ALLIN_REASON_MODEL:-deepseek-r1:14b}
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
       ASKBOX_COOKIE_SECURE: ${ASKBOX_COOKIE_SECURE:-false}
       ASKBOX_ALLOW_REGISTER: ${ASKBOX_ALLOW_REGISTER:-false}
@@ -95,6 +98,9 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:14b}
+      OLLAMA_REASON_MODEL: ${OLLAMA_REASON_MODEL:-deepseek-r1:14b}
+      ALLIN_CODE_MODEL: ${ALLIN_CODE_MODEL:-qwen2.5-coder:14b}
+      ALLIN_REASON_MODEL: ${ALLIN_REASON_MODEL:-deepseek-r1:14b}
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
       ASKBOX_REPO_PATH: /repo
       # Auto-update diario (git pull --ff-only + compose rebuild en este directorio).
@@ -159,7 +165,8 @@ services:
       - redis_data:/data
     restart: unless-stopped
 
-  # LLM local. La API solo lo usa con provider=ollama (DNS ollama:11434 en askbox_default).
+  # LLM local. provider=ollama no sale de este servicio. mode=allin también lo usa y,
+  # solo si Ollama falla, la API puede llamar a Gemini/OpenRouter por su cuenta.
   # El puerto publicado queda en localhost; el resto de la red no lo ve.
   ollama:
     image: ollama/ollama:latest
