@@ -58,6 +58,8 @@ En Docker, el contenedor `api` no lee `.env` del repo (está enmascarado). Para 
 | GET/POST | `/v1/projects` | Listar / crear proyecto |
 | GET/POST | `/v1/projects/{id}/keys` | Listar (solo `last4`, `status`, `label`, `provider`) / alta de clave (se cifra) |
 | DELETE | `/v1/projects/{id}/keys/{key_id}` | Borrar clave |
+| POST | `/v1/tts` | Texto a voz con Piper local (sin LLM): `{text, lang: es\|en, style: plain\|snake}` → `audio/wav`. Auth: `Bearer $ASKBOX_TTS_SERVICE_KEY` (backends), `Bearer ab_live_…` con scope `tts:synth` o cookie |
+| GET | `/v1/tts/status` | `{ready, voices, loaded, errors}` del motor TTS |
 | GET/POST | `/v1/projects/{id}/access-tokens` | Listar metadatos (`prefix`, `scopes`, `last4` vía prefix) / crear token (`ab_live_…` solo en la respuesta POST) |
 | DELETE | `/v1/projects/{id}/access-tokens/{token_id}` | Revocar token de proyecto |
 | GET/POST | `/v1/projects/{id}/prompts` | Listar última versión por nombre / crear nueva versión (`name`, `system_prompt`, `user_template`, `default_tier`) |
@@ -140,6 +142,22 @@ Cada despliegue askbox se actualiza **solo** vía cron arq en el **worker** (no 
 **Variables** (ver `.env.example`): `ASKBOX_AUTO_UPDATE=true` (poner `false` para desactivar), `ASKBOX_AUTO_UPDATE_HOUR=5`, `ASKBOX_AUTO_UPDATE_MINUTE=0` (UTC). Prueba: `docker compose exec worker python -m app.cli auto-update --dry-run`.
 
 Errores: `{"error": {"code", "message"}}`. `401` sin auth, `403` registro cerrado, `413/422` tamaños, `429` rate limit, `502` fallo de proveedores (`no_provider_key` o `provider_failed`; siempre con `request_id`).
+
+## Voz (TTS, `/v1/tts`)
+
+Motor Piper en local dentro de la API, separado de `/v1/ask` (no pasa por el LLM ni por el catálogo).
+
+- Voces `.onnx` en el host, montadas en `/voices`: `ASKBOX_PIPER_VOICES=/ruta/a/piper-voices` en `.env`
+  (`es_ES-davefx-medium`, `en_US-lessac-medium` con sus `.onnx.json`).
+- `ASKBOX_TTS_SERVICE_KEY`: clave larga para backends propios (p. ej. Snake OS hace de proxy same-origin de
+  `/api/tts` y la clave nunca llega al navegador). Sin CORS.
+- `ASKBOX_TTS_WARM=true` carga las voces al arrancar (~15 s); `ASKBOX_TTS_RATE_PER_MIN` (120), `ASKBOX_TTS_MAX_CHARS` (600).
+
+```bash
+curl -sS -X POST https://askbox.example.com/api/v1/tts \
+  -H "Authorization: Bearer $ASKBOX_TTS_SERVICE_KEY" -H 'Content-Type: application/json' \
+  -d '{"text":"Hola","lang":"es","style":"snake"}' -o hola.wav
+```
 
 ## Cómo probar
 

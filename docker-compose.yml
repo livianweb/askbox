@@ -20,6 +20,11 @@ services:
       ASKBOX_PDF_DPI: ${ASKBOX_PDF_DPI:-200}
       ASKBOX_PDF_MAX_PAGES: ${ASKBOX_PDF_MAX_PAGES:-10}
       OMP_THREAD_LIMIT: "1"            # Tesseract en un solo hilo (previsible bajo carga)
+      # POST /v1/tts (Piper, local): voces .onnx montadas en /voices; clave de servicio para backends.
+      ASKBOX_PIPER_DIR: /voices
+      ASKBOX_TTS_WARM: ${ASKBOX_TTS_WARM:-true}
+      ASKBOX_TTS_SERVICE_KEY: ${ASKBOX_TTS_SERVICE_KEY:-}
+      ASKBOX_TTS_RATE_PER_MIN: ${ASKBOX_TTS_RATE_PER_MIN:-120}
       ASKBOX_PUBLIC_URL: ${ASKBOX_PUBLIC_URL:-http://localhost:8067}
       # Swagger/ReDoc detrás del proxy Next (/api/*): rutas «Try it out» y carga del esquema.
       ASKBOX_API_EXTERNAL_PREFIX: ${ASKBOX_API_EXTERNAL_PREFIX:-/api}
@@ -57,6 +62,8 @@ services:
       - ./.askbox:/repo/.askbox:rw
       # ...y el .env real NUNCA es legible dentro del contenedor (secretos van por environment).
       - /dev/null:/repo/.env:ro
+      # Voces Piper para POST /v1/tts (solo lectura). Ajusta ASKBOX_PIPER_VOICES en .env.
+      - ${ASKBOX_PIPER_VOICES:-./data/piper-voices}:/voices:ro
       # Kit de orquestación (hermano en el host): árbol ro + .git rw, para crear su remoto/push
       # con el GitHub token guardado. Si no existe en tu host, quita estas dos líneas y
       # ASKBOX_EXTRA_REPOS (si no, Docker crearía el directorio vacío como root).
