@@ -37,3 +37,6 @@ cj
 .idea/
 .vscode/
 Thumbs.db
+
+# Voces Piper locales (POST /v1/tts)
+/data/piper-voices/

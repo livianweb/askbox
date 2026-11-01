@@ -12,7 +12,7 @@ def _err(status: int, code: str, message: str) -> HTTPException:
     return HTTPException(status, {"code": code, "message": message})
 
 TOKEN_PREFIX = "ab_live_"
-VALID_SCOPES = frozenset({"ask:read", "prompts:write", "keys:write", "usage:read"})
+VALID_SCOPES = frozenset({"ask:read", "prompts:write", "keys:write", "usage:read", "tts:synth"})
 
 
 def new_access_token() -> tuple[str, str]:

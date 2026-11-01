@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
@@ -13,7 +14,7 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.crypto import master_key_ready
 from app.db import create_pool, run_migrations
-from app.routers import access_tokens, alerts, ask, auth, batch, deploy_settings, git_settings, ocr, projects, prompts, usage
+from app.routers import access_tokens, alerts, ask, auth, batch, deploy_settings, git_settings, ocr, projects, prompts, tts, usage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("askbox")
@@ -27,6 +28,10 @@ async def lifespan(app: FastAPI):
     app.state.arq = await arq_create_pool(RedisSettings.from_dsn(settings.redis_url))
     if not master_key_ready():
         log.warning("ASKBOX_MASTER_KEY ausente o inválida: el alta de claves devolverá 503")
+    if os.environ.get("ASKBOX_TTS_WARM", "").lower() in ("1", "true", "yes"):
+        from app.tts import engine as tts_engine
+
+        tts_engine.warm()
     yield
     await app.state.arq.close()
     await app.state.redis.aclose()
@@ -45,6 +50,7 @@ app.include_router(access_tokens.router)
 app.include_router(prompts.router)
 app.include_router(ask.router)
 app.include_router(ocr.router)
+app.include_router(tts.router)
 app.include_router(usage.router)
 app.include_router(batch.router)
 app.include_router(alerts.router)
