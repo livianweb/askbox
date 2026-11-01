@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 
@@ -23,11 +24,44 @@ def _type_ok(value: Any, t: str) -> bool:
     return True
 
 
+def extract_json_value(text: str) -> Any:
+    """Parse JSON from raw model text; tolerate markdown fences / leading prose."""
+    raw = str(text or "").strip()
+    if not raw:
+        raise json.JSONDecodeError("empty", raw, 0)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    cleaned = raw
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, count=1, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned.strip(), count=1)
+        cleaned = cleaned.strip()
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+    start_obj, end_obj = raw.find("{"), raw.rfind("}")
+    start_arr, end_arr = raw.find("["), raw.rfind("]")
+    candidates = []
+    if start_obj >= 0 and end_obj > start_obj:
+        candidates.append(raw[start_obj : end_obj + 1])
+    if start_arr >= 0 and end_arr > start_arr:
+        candidates.append(raw[start_arr : end_arr + 1])
+    for chunk in candidates:
+        try:
+            return json.loads(chunk)
+        except json.JSONDecodeError:
+            continue
+    raise json.JSONDecodeError("no json", raw, 0)
+
+
 def response_matches_schema(text: str, schema: dict | None) -> bool:
     if not schema:
         return bool((text or "").strip())
     try:
-        data = json.loads(text)
+        data = extract_json_value(text)
     except json.JSONDecodeError:
         return False
     st = schema.get("type")
