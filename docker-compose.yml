@@ -159,6 +159,22 @@ services:
       - redis_data:/data
     restart: unless-stopped
 
+  # LLM local. La API solo lo usa con provider=ollama (DNS ollama:11434 en askbox_default).
+  # El puerto publicado queda en localhost; el resto de la red no lo ve.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    environment:
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-1}
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
 volumes:
   db_data:
   redis_data:
+  ollama_data:

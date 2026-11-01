@@ -194,13 +194,16 @@ Sin clave de proveedor, `/v1/ask` responde `502 no_provider_key` y deja la traza
 
 Ruta explícita: la petición va solo a Ollama y **no** entra en la cascada de Gemini/OpenRouter ni en el keypool. Si omites `provider` y no mandas `model` con prefijo `ollama/`, el comportamiento anterior no cambia. Ollama no está en la cascada automática.
 
-Ollama debe estar en la red Compose, servicio `ollama`, puerto `11434`. La API llama a `{OLLAMA_BASE_URL}/v1/chat/completions` (compatible OpenAI). No hace falta clave.
+El servicio `ollama` está en `docker-compose.yml` (`ollama/ollama:latest`, `container_name: ollama`, volumen `ollama_data` → `/root/.ollama`). El puerto publicado es solo `127.0.0.1:11434`. En la red Compose la API lo llama por DNS `http://ollama:11434` (`OLLAMA_BASE_URL`, compatible OpenAI en `/v1/chat/completions`). No hace falta clave. El modelo por defecto es `qwen2.5-coder:14b`.
 
 | Variable | Default | Uso |
 |---|---|---|
-| `OLLAMA_BASE_URL` | `http://ollama:11434` | Base del servicio. También vale `…/v1`. Desde el host: `http://127.0.0.1:11434` |
+| `OLLAMA_BASE_URL` | `http://ollama:11434` | Base que usa la API. También vale `…/v1`. Desde el host: `http://127.0.0.1:11434` |
 | `OLLAMA_MODEL` | `qwen2.5-coder:14b` | Modelo si el cuerpo no trae `model` |
 | `OLLAMA_TIMEOUT` | `120` | Segundos de espera de esa llamada (el 14B local suele pasar de `ASKBOX_PROVIDER_TIMEOUT`) |
+| `OLLAMA_KEEP_ALIVE` | `30m` | El contenedor `ollama` (cuánto deja el modelo cargado) |
+| `OLLAMA_NUM_PARALLEL` | `1` | Peticiones paralelas dentro de Ollama |
+| `OLLAMA_MAX_LOADED_MODELS` | `1` | Modelos cargados a la vez |
 
 ```bash
 # Modelo por defecto (OLLAMA_MODEL):
