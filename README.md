@@ -66,8 +66,8 @@ En Docker, el contenedor `api` no lee `.env` del repo (está enmascarado). Para 
 | GET | `/v1/projects/{id}/prompts/{name}` | Última versión (`?version=N` opcional) |
 | GET | `/v1/projects/{id}/prompts/{name}/versions` | Historial de versiones |
 | DELETE | `/v1/projects/{id}/prompts/{name}` | Borrar todas las versiones |
-| POST | `/v1/ask` | Sesión o `Authorization: Bearer ab_live_…` (scope `ask:read`). Cuerpo: `prompt` **o** `prompt_template` + `variables`, `system?`, `project_id?` (ignorado con token de proyecto), `tier`, `max_output_tokens`, `attachments?`, `task?`, `provider?` (`ollama`), `model?` (ver Ollama abajo) |
-| POST | `/v1/ask/stream` | Igual auth/cuerpo que `/v1/ask`; respuesta **SSE** (`text/event-stream`): eventos `delta` con `text` y `done` con metadatos (`request_id`, tokens, etc.) |
+| POST | `/v1/ask` | Sesión o `Authorization: Bearer ab_live_…` (scope `ask:read`). Cuerpo: `prompt` **o** `prompt_template` + `variables`, `system?`, `project_id?` (ignorado con token de proyecto), `tier`, `max_output_tokens`, `attachments?`, `task?`, `provider?` (`ollama` local o `allin`), `model?`, `mode?` (`allin`) |
+| POST | `/v1/ask/stream` | Igual auth/cuerpo que `/v1/ask` (incluidos `mode=allin` y `provider=ollama` / `provider=allin`); respuesta **SSE** (`text/event-stream`): eventos `delta` con `text` y `done` con metadatos (`request_id`, tokens, etc.) |
 | POST | `/v1/ocr` | Sesión o `Authorization: Bearer ab_live_…` (scope `ask:read`). OCR de **una página** de PDF o imagen (Tesseract + poppler). Cuerpo: `{data_base64, mime, page?=1, lang?="spa", psm?=4, words?=false}`. Ver «OCR» abajo |
 | POST | `/v1/batch` | Solo sesión. `{project_id?, tier, max_output_tokens, items:[{prompt, system?}]}` → `{job_id, status, total}`; encola worker arq |
 | GET | `/v1/jobs/{job_id}` | Estado del batch e ítems (`text` / `error_code` por prompt) |
@@ -188,34 +188,82 @@ curl -s $J -H "Authorization: Bearer $TOK" \
   -d '{"prompt":"Di hola en una frase","provider":"ollama"}' $A/v1/ask
 ```
 
-Sin clave de proveedor, `/v1/ask` responde `502 no_provider_key` y deja la traza en `requests`. Con claves de sistema (`GEMINI_API_KEY` / `OPENROUTER_API_KEY` en `.env`) y proyecto con `allow_system_keys=true`, se usan como respaldo. Ese camino no se usa si pides Ollama (abajo).
+Sin clave de proveedor, `/v1/ask` responde `502 no_provider_key` y deja la traza en `requests`. Con claves de sistema (`GEMINI_API_KEY` / `OPENROUTER_API_KEY` en `.env`) y proyecto con `allow_system_keys=true`, se usan como respaldo. `provider=ollama` no usa esas claves ni sale a internet (abajo). `mode=allin` solo las usa en la etapa web o si Ollama falla.
 
-### Ollama local (`provider=ollama`)
+### Ollama local (`provider=ollama`) — sin internet
 
-Ruta explícita: la petición va solo a Ollama y **no** entra en la cascada de Gemini/OpenRouter ni en el keypool. Si omites `provider` y no mandas `model` con prefijo `ollama/`, el comportamiento anterior no cambia. Ollama no está en la cascada automática.
+Ruta explícita y **100 % local**: la petición va solo a Ollama. **No** llama a Gemini, a OpenRouter ni a búsqueda web, no usa el keypool y **no** entra en la cascada. Si Ollama no responde o el texto no cumple `json_schema`, la respuesta es `502 provider_failed` (sin fallback a la nube). Si omites `provider` y no mandas `model` con prefijo `ollama/`, y tampoco pides `mode=allin` ni `provider=allin`, el comportamiento de la cascada no cambia. Ollama no está en la cascada automática.
 
-El servicio `ollama` está en `docker-compose.yml` (`ollama/ollama:latest`, `container_name: ollama`, volumen `ollama_data` → `/root/.ollama`). El puerto publicado es solo `127.0.0.1:11434`. En la red Compose la API lo llama por DNS `http://ollama:11434` (`OLLAMA_BASE_URL`, compatible OpenAI en `/v1/chat/completions`). No hace falta clave. El modelo por defecto es `qwen2.5-coder:14b`.
+El servicio `ollama` está en `docker-compose.yml` (`ollama/ollama:latest`, `container_name: ollama`, volumen `ollama_data` → `/root/.ollama`). El puerto publicado es solo `127.0.0.1:11434`. En la red Compose la API lo llama por DNS `http://ollama:11434` (`OLLAMA_BASE_URL`, compatible OpenAI en `/v1/chat/completions`). No hace falta clave.
 
 | Variable | Default | Uso |
 |---|---|---|
 | `OLLAMA_BASE_URL` | `http://ollama:11434` | Base que usa la API. También vale `…/v1`. Desde el host: `http://127.0.0.1:11434` |
-| `OLLAMA_MODEL` | `qwen2.5-coder:14b` | Modelo si el cuerpo no trae `model` |
+| `OLLAMA_MODEL` | `qwen2.5-coder:14b` | Código habitual si no hay `ALLIN_CODE_MODEL` |
+| `OLLAMA_REASON_MODEL` | `deepseek-r1:14b` | Bugs, arquitectura, lógica abstracta (también vale `ALLIN_REASON_MODEL`) |
+| `ALLIN_CODE_MODEL` | `qwen2.5-coder:14b` (o `OLLAMA_MODEL`) | Modelo de código en Ollama auto y en `mode=allin` |
+| `ALLIN_REASON_MODEL` | `deepseek-r1:14b` (o `OLLAMA_REASON_MODEL`) | Modelo de razonamiento en `mode=allin` |
 | `OLLAMA_TIMEOUT` | `120` | Segundos de espera de esa llamada (el 14B local suele pasar de `ASKBOX_PROVIDER_TIMEOUT`) |
 | `OLLAMA_KEEP_ALIVE` | `30m` | El contenedor `ollama` (cuánto deja el modelo cargado) |
 | `OLLAMA_NUM_PARALLEL` | `1` | Peticiones paralelas dentro de Ollama |
 | `OLLAMA_MAX_LOADED_MODELS` | `1` | Modelos cargados a la vez |
 
+Selección cuando `model` se omite o es `"auto"` (sigue siendo local):
+
+- Código directo, SQL habitual, sintaxis, PrestaShop o maquetación → `ALLIN_CODE_MODEL` / `OLLAMA_MODEL` (Qwen).
+- Bug complejo, deadlock, arquitectura o lógica abstracta, sin pedir código → `OLLAMA_REASON_MODEL` (DeepSeek). Una sola llamada.
+- Desarrollo complejo (lo anterior **y** hace falta código) → DeepSeek escribe el plan y Qwen el código. `models_chain` lista los dos (`ollama:deepseek-r1:14b`, `ollama:qwen2.5-coder:14b`). Sigue sin salir a internet.
+- `model` con un slug concreto (`qwen2.5-coder:14b`, `deepseek-r1:14b`, `ollama/<slug>`, …) → una sola llamada a ese modelo, sin selección automática.
+
+Hay que tener el modelo de razonamiento en el volumen de Ollama:
+
 ```bash
-# Modelo por defecto (OLLAMA_MODEL):
+docker exec ollama ollama pull deepseek-r1:14b
+```
+
+```bash
+# (1) Simple → Qwen. No toca Gemini ni OpenRouter.
 curl -s $J -H "Authorization: Bearer $TOK" \
   -d '{"prompt":"Di hola en una frase","provider":"ollama"}' $A/v1/ask
 
-# Modelo concreto (equivalente: "model":"ollama/qwen2.5-coder:14b" sin provider):
+# (2) Bug complejo / lógica → DeepSeek. Sigue siendo solo local.
+curl -s $J -H "Authorization: Bearer $TOK" \
+  -d '{"prompt":"Explica el interbloqueo de dos transacciones que se esperan mutuamente","provider":"ollama"}' $A/v1/ask
+
+# (3) Modelo forzado: una sola llamada, aunque el prompt sea complejo.
 curl -s $J -H "Authorization: Bearer $TOK" \
   -d '{"prompt":"Di hola en una frase","provider":"ollama","model":"qwen2.5-coder:14b"}' $A/v1/ask
 ```
 
-`tier` se guarda en la traza y no elige el modelo. Adjuntos con Ollama: `422 ollama_no_attachments`. Si Ollama no responde o el texto no cumple `json_schema`: `502 provider_failed` (no hay reintento contra Gemini). La respuesta trae `provider: "ollama"`; en `requests.key_source` queda `local`. Coste estimado `0`.
+`tier` se guarda en la traza y no elige el modelo. Adjuntos con `provider=ollama`: `422 ollama_no_attachments` (la extracción es de `mode=allin`). La respuesta trae `provider: "ollama"`; en `requests.key_source` queda `local`. Coste estimado `0`.
+
+### Orquestador híbrido (`mode=allin`, alias `provider=allin`)
+
+Camino distinto de `provider=ollama`. Mismo cuerpo en `POST /v1/ask` y `POST /v1/ask/stream`. Si no envías `mode` ni `provider=allin`, no se ejecuta.
+
+Etapas (se saltan si no hacen falta):
+
+1. **Adjuntos** — OCR / texto de PDF con el mismo motor que `/v1/ocr`. Los modelos locales reciben solo texto. `provider=ollama` sigue rechazando adjuntos; aquí sí se aceptan.
+2. **Web** — solo si el prompt pide datos actuales (p. ej. «busca en Google», «latest version», «documentación reciente» o una URL `http(s)`). Una llamada a Gemini con Google Search grounding o, si no hay clave Gemini, a OpenRouter con el plugin web (slug del `model_catalog`, keypool). Si falla, se sigue sin resumen.
+3. **DeepSeek local** (`ALLIN_REASON_MODEL`) — tarea compleja, o cuando hubo texto de adjunto y resumen web.
+4. **Qwen local** (`ALLIN_CODE_MODEL`) — cuando hace falta código. Si la etapa 3 corrió, recibe el plan.
+5. **Atajo** — sin adjuntos, sin web y complejidad baja: una sola llamada local (Qwen si es código, DeepSeek si es lógica). No encadena etapas.
+
+Si una llamada a Ollama falla (timeout, conexión o salida que no cumple `json_schema`), esa etapa cae a la cascada Gemini/OpenRouter para no dejar la petición colgada. `models_chain` lista lo que corrió, por ejemplo `allin:ocr`, `allin:web`, `gemini:…`, `ollama:deepseek-r1:14b`, `ollama:qwen2.5-coder:14b`, o los peers de la cascada si hubo fallback. Si el texto final lo escribió un modelo local, `provider` es `allin`; si lo escribió la cascada, `provider` es `gemini` u `openrouter`.
+
+```bash
+# (4) Pipeline híbrido: PDF + web + razonamiento + código.
+# Sustituye <BASE64> por el PDF (base64, sin prefijo data:).
+curl -s $J -H "Authorization: Bearer $TOK" \
+  -d '{"mode":"allin","prompt":"Busca en Google la documentación reciente de los deadlocks de PostgreSQL y escribe el código SQL que evita el interbloqueo.","attachments":[{"mime":"application/pdf","filename":"traza.pdf","data_base64":"<BASE64>"}]}' \
+  $A/v1/ask
+
+# Alias equivalente (no es la ruta ollama):
+curl -s $J -H "Authorization: Bearer $TOK" \
+  -d '{"prompt":"Di hola en una frase","provider":"allin"}' $A/v1/ask
+```
+
+`mode=allin` gana si también mandas `provider=ollama`. El campo `model` en allin no elige el modelo local.
 
 Tests sin red: `docker run --rm -v "$PWD/api":/srv -w /srv -e PYTHONPATH=/srv askbox-api python -m unittest discover -s tests`
 
@@ -244,7 +292,7 @@ Variables que lee la API (`api/app/config.py` → `api/app/mailer.py`): `ASKBOX_
 
 ## Diseño (resumen)
 
-- `api/app/llm/`: `router.py` (caché → tier → peers same-class en todos los proveedores con clave → bajada de tier; atajo `provider=ollama` sin cascada), `providers/` (gemini, openrouter, ollama), `keypool.py`, `cache.py`, `catalog.py` (`peer_chain`).
+- `api/app/llm/`: `router.py` (caché → tier → peers same-class en todos los proveedores con clave → bajada de tier; `provider=ollama` 100 % local sin cascada; `mode=allin` delega en `allin.py`), `providers/` (gemini, openrouter, ollama), `ollama_local.py`, `heuristics.py`, `keypool.py`, `cache.py`, `catalog.py` (`peer_chain`).
 - Modelos y cadenas en la tabla `model_catalog` (seeds/migraciones en `api/app/migrations/`); ajustar `enabled`, `priority`, `tier` y costes en BD (o nueva migración), no en código.
 - Seguridad: AES-256-GCM con AAD `proyecto:proveedor`, nonce aleatorio, `key_version`; la API nunca devuelve claves; logs sin prompts (solo longitud y hash truncado).
 - Límites: prompt ≤ 20000 chars, `max_output_tokens` ≤ 8192, rate limit Redis (`ASKBOX_ASK_RATE_PER_MIN`, 30/min por usuario, token `ab_live_` y proyecto en `/v1/ask`; login 10/min por IP).

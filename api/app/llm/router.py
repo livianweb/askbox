@@ -2,8 +2,10 @@
 
 Política provider-agnostic: para el tier pedido, peers de misma clase de potencia (S|M|L)
 entre todos los proveedores con clave; solo bajar de clase/tier cuando se agotan.
-Si el cliente pide provider=ollama (o model=ollama/<slug>), una sola llamada local
-y no se consulta esa cascada. Sin ese parámetro el camino no cambia.
+Si el cliente pide provider=ollama (o model=ollama/<slug>), la ruta es 100 % local
+(`ollama_local`) y un fallo no consulta esta cascada.
+`mode=allin` o `provider=allin` delega en `allin.py` (híbrido, con fallback).
+Sin esos parámetros el camino de cascada no cambia.
 Todas las llamadas externas viven bajo app/llm/.
 """
 from __future__ import annotations
@@ -14,11 +16,12 @@ import re
 from typing import Any
 
 from app.config import settings
-from app.llm import attachments, cache, catalog, keypool
+from app.llm import attachments, cache, catalog, keypool, ollama_local
 from app.llm.attachments import NormalizedAttachment
 from app.llm.errors import LLMError
+from app.llm.heuristics import prompt_text
 from app.llm.ollama_route import parse_explicit_provider
-from app.llm.providers import gemini, ollama, openrouter
+from app.llm.providers import gemini, openrouter
 from app.llm.schema_check import response_matches_schema
 
 log = logging.getLogger(__name__)
@@ -273,52 +276,43 @@ async def _ask_ollama(
     tier: str,
     max_tokens: int,
     json_schema: dict | None,
-    model: str,
+    steps: list[str],
     ttl: int,
     ckey: str,
     temperature: float = 0.4,
 ) -> dict[str, Any]:
-    """Una llamada al Ollama pedido. Sin keypool, sin peers y sin bajar a Gemini."""
-    tag = f"ollama:{model}"
+    """Ruta local. Sin keypool, sin peers y sin Gemini/OpenRouter."""
     try:
-        out = await ollama.complete(
+        out = await ollama_local.execute(
             messages,
-            model=model,
+            steps=steps,
             max_tokens=max_tokens,
             temperature=temperature,
+            json_schema=json_schema,
         )
-    except LLMError as exc:
+    except ollama_local.LocalFailure as exc:
         raise AskFailure(
-            f"Ollama ({model}) no respondió: {exc}",
+            str(exc),
             tier_used=tier,
-            attempts=1,
+            attempts=exc.attempts,
             kind="fatal" if exc.kind == "fatal" else "retry",
             code="provider_failed",
         ) from None
-    text = (out.get("text") or "").strip()
-    if not response_matches_schema(text, json_schema):
-        raise AskFailure(
-            f"Ollama ({model}) respondió vacío o no cumple json_schema.",
-            tier_used=tier,
-            attempts=1,
-            kind="retry",
-            code="provider_failed",
-        )
     result = {
-        "text": text,
+        "text": out["text"],
         "provider": "ollama",
-        "model_used": out.get("model") or model,
-        "input_tokens": int(out.get("input_tokens") or 0),
-        "output_tokens": int(out.get("output_tokens") or 0),
+        "model_used": out["model_used"],
+        "input_tokens": out["input_tokens"],
+        "output_tokens": out["output_tokens"],
         "estimated_cost_usd": 0.0,
-        "models_chain": [tag],
+        "models_chain": out["models_chain"],
     }
     await cache.put(redis, ckey, result, ttl)
     return {
         **result,
         "cache_hit": False,
         "tier_used": tier,
-        "attempts": 1,
+        "attempts": out["attempts"],
         "key_id": None,
         "key_source": "local",
     }
@@ -337,7 +331,22 @@ async def ask(
     task_used: str | None = None,
     provider: str | None = None,
     model: str | None = None,
+    mode: str | None = None,
 ) -> dict[str, Any]:
+    if (mode or "").strip().lower() == "allin" or (provider or "").strip().lower() == "allin":
+        from app.llm.allin import run_allin
+
+        return await run_allin(
+            pool,
+            redis,
+            project=project,
+            messages=messages,
+            tier=tier,
+            max_tokens=max_tokens,
+            json_schema=json_schema,
+            normalized_attachments=normalized_attachments,
+            task_used=task_used,
+        )
     atts = normalized_attachments or []
     explicit: tuple[str, str] | None = None
     if (provider or "").strip() or (model or "").strip():
@@ -374,7 +383,13 @@ async def ask(
         if requested_auto
         else tier
     )
-    route = f"ollama:{explicit[1]}" if explicit else ""
+    if explicit and explicit[1] == "auto":
+        steps = ollama_local.planned_models(prompt_text(messages))
+    elif explicit:
+        steps = [explicit[1]]
+    else:
+        steps = None
+    route = "ollama:" + ">".join(steps) if steps else ""
 
     ckey = cache.cache_key(
         str(project["id"]),
@@ -409,7 +424,7 @@ async def ask(
             tier=effective_tier,
             max_tokens=max_tokens,
             json_schema=json_schema,
-            model=explicit[1],
+            steps=steps or [],
             ttl=ttl,
             ckey=ckey,
             temperature=temperature,

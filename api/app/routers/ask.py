@@ -71,24 +71,47 @@ class AskIn(BaseModel):
         default=None,
         max_length=32,
         description=(
-            "Enrutado explícito. Solo `ollama` (Ollama local, sin Gemini ni OpenRouter). "
+            "Enrutado explícito. `ollama`: solo Ollama local, sin Gemini, OpenRouter ni web "
+            "(sin modelo o con `auto`, elige Qwen o DeepSeek en local; un fallo no cae a la nube). "
+            "`allin`: alias de `mode=allin` (híbrido). "
             "Si se omite, la cascada por tier, catálogo y keypool no cambia. "
-            "No admite adjuntos."
+            "`ollama` no admite adjuntos; `allin` sí."
         ),
     )
     model: str | None = Field(
         default=None,
         max_length=160,
         description=(
-            "Con provider=ollama, slug de Ollama (p. ej. qwen2.5-coder:14b). "
-            "Si se omite, se usa OLLAMA_MODEL. "
+            "Con provider=ollama, slug de Ollama (p. ej. qwen2.5-coder:14b o deepseek-r1:14b). "
+            "Si se omite o es `auto`, la selección local depende del prompt (no llama a la nube). "
             "También vale model=ollama/<slug> sin provider (el prefijo elige Ollama). "
-            "Sin provider ni prefijo ollama/, model se rechaza."
+            "Sin provider ni prefijo ollama/, model se rechaza. Con mode/provider allin se ignora."
+        ),
+    )
+    mode: str | None = Field(
+        default=None,
+        max_length=32,
+        description=(
+            "Orquestador opcional. `allin` (también `provider=allin`) ejecuta extracción de adjuntos, "
+            "resumen web si el prompt lo pide, DeepSeek local y Qwen local, con fallback a la cascada "
+            "Gemini/OpenRouter si Ollama falla. Si se omite, la cascada o `provider=ollama` no cambian. "
+            "`mode=allin` tiene prioridad sobre `provider=ollama`."
         ),
     )
 
     @model_validator(mode="after")
     def _explicit_provider(self):
+        mode = (self.mode or "").strip().lower()
+        prov = (self.provider or "").strip().lower()
+        if mode and mode != "allin":
+            raise ValueError('mode solo admite "allin".')
+        if mode == "allin" or prov == "allin":
+            # Alias híbrido. No es la ruta ollama (esa no sale a internet ni acepta adjuntos).
+            self.mode = "allin"
+            self.provider = None
+            self.model = None
+            return self
+        self.mode = None
         try:
             parsed = parse_explicit_provider(self.provider, self.model)
         except ValueError as exc:
@@ -210,8 +233,11 @@ async def _prepare_ask(pool, redis, auth: AskAuth, body: AskIn) -> tuple:
     description=(
         "Auth: cookie de sesión o `Authorization: Bearer ab_live_…` (scope ask:read). "
         "Cuerpo: `prompt` o `prompt_template` + `variables`, más tier, tokens y opcionalmente adjuntos. "
-        "Opcional: `provider=ollama` (y `model`, o `model=ollama/<slug>`) envía la petición solo a Ollama local; "
-        "sin ese parámetro la cascada Gemini/OpenRouter no cambia. "
+        "Opcional: `provider=ollama` (y `model`, o `model=ollama/<slug>`) es 100 % local "
+        "(sin Gemini, OpenRouter ni web; si Ollama falla, 502, sin fallback). "
+        "`mode=allin` o `provider=allin` usa el orquestador híbrido (adjuntos, web si hace falta, "
+        "modelos locales y fallback a la cascada). "
+        "Sin esos campos la cascada Gemini/OpenRouter no cambia. "
         "Los adjuntos no se guardan; la caché Redis incluye un digest de los bytes enviados al proveedor."
     ),
 )
@@ -233,6 +259,7 @@ async def ask(body: AskIn, request: Request, auth: AskAuth = Depends(ask_auth)):
         task_used=task_used,
         provider=body.provider,
         model=body.model,
+        mode=body.mode,
     )
 
 
@@ -244,7 +271,7 @@ def _sse(data: dict) -> str:
     "/ask/stream",
     summary="Completar prompt con SSE",
     description=(
-        "Mismo cuerpo y reglas de adjuntos que POST /v1/ask. "
+        "Mismo cuerpo que POST /v1/ask, incluidos `mode=allin` y `provider=ollama` / `provider=allin`. "
         "Respuesta text/event-stream: eventos `delta` (text) y `done` (metadatos, incl. task_used y attachments_processed si aplica)."
     ),
 )
@@ -268,6 +295,7 @@ async def ask_stream(body: AskIn, request: Request, auth: AskAuth = Depends(ask_
             task_used=task_used,
             provider=body.provider,
             model=body.model,
+            mode=body.mode,
         ):
             yield _sse(event)
 
