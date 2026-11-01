@@ -2,6 +2,8 @@
 
 Política provider-agnostic: para el tier pedido, peers de misma clase de potencia (S|M|L)
 entre todos los proveedores con clave; solo bajar de clase/tier cuando se agotan.
+Si el cliente pide provider=ollama (o model=ollama/<slug>), una sola llamada local
+y no se consulta esa cascada. Sin ese parámetro el camino no cambia.
 Todas las llamadas externas viven bajo app/llm/.
 """
 from __future__ import annotations
@@ -15,7 +17,8 @@ from app.config import settings
 from app.llm import attachments, cache, catalog, keypool
 from app.llm.attachments import NormalizedAttachment
 from app.llm.errors import LLMError
-from app.llm.providers import gemini, openrouter
+from app.llm.ollama_route import parse_explicit_provider
+from app.llm.providers import gemini, ollama, openrouter
 from app.llm.schema_check import response_matches_schema
 
 log = logging.getLogger(__name__)
@@ -263,6 +266,64 @@ async def _cascade(
             )
 
 
+async def _ask_ollama(
+    redis,
+    *,
+    messages: list[dict],
+    tier: str,
+    max_tokens: int,
+    json_schema: dict | None,
+    model: str,
+    ttl: int,
+    ckey: str,
+    temperature: float = 0.4,
+) -> dict[str, Any]:
+    """Una llamada al Ollama pedido. Sin keypool, sin peers y sin bajar a Gemini."""
+    tag = f"ollama:{model}"
+    try:
+        out = await ollama.complete(
+            messages,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+    except LLMError as exc:
+        raise AskFailure(
+            f"Ollama ({model}) no respondió: {exc}",
+            tier_used=tier,
+            attempts=1,
+            kind="fatal" if exc.kind == "fatal" else "retry",
+            code="provider_failed",
+        ) from None
+    text = (out.get("text") or "").strip()
+    if not response_matches_schema(text, json_schema):
+        raise AskFailure(
+            f"Ollama ({model}) respondió vacío o no cumple json_schema.",
+            tier_used=tier,
+            attempts=1,
+            kind="retry",
+            code="provider_failed",
+        )
+    result = {
+        "text": text,
+        "provider": "ollama",
+        "model_used": out.get("model") or model,
+        "input_tokens": int(out.get("input_tokens") or 0),
+        "output_tokens": int(out.get("output_tokens") or 0),
+        "estimated_cost_usd": 0.0,
+        "models_chain": [tag],
+    }
+    await cache.put(redis, ckey, result, ttl)
+    return {
+        **result,
+        "cache_hit": False,
+        "tier_used": tier,
+        "attempts": 1,
+        "key_id": None,
+        "key_source": "local",
+    }
+
+
 async def ask(
     pool,
     redis,
@@ -274,8 +335,24 @@ async def ask(
     json_schema: dict | None = None,
     normalized_attachments: list[NormalizedAttachment] | None = None,
     task_used: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     atts = normalized_attachments or []
+    explicit: tuple[str, str] | None = None
+    if (provider or "").strip() or (model or "").strip():
+        try:
+            explicit = parse_explicit_provider(provider, model)
+        except ValueError as exc:
+            raise AskFailure(str(exc), tier_used=tier, attempts=0, kind="fatal", code="provider_failed") from None
+    if explicit and atts:
+        raise AskFailure(
+            "Ollama no admite adjuntos en /v1/ask. Quita attachments o omite provider.",
+            tier_used=tier,
+            attempts=0,
+            kind="fatal",
+            code="provider_failed",
+        )
     if atts:
         messages = attachments.attach_to_messages(messages, atts)
     prompt_rendered = "\n".join(f"{m['role']}:{m.get('content') or ''}" for m in messages)
@@ -286,7 +363,8 @@ async def ask(
     )
     require_vision = bool(atts)
     requested_auto = tier == "auto"
-    effective_tier = (
+    # Con Ollama explícito no se infiere ni se escala el tier: no elige modelo.
+    effective_tier = tier if explicit else (
         infer_tier_from_text(
             prompt_rendered,
             max_tokens,
@@ -296,9 +374,16 @@ async def ask(
         if requested_auto
         else tier
     )
+    route = f"ollama:{explicit[1]}" if explicit else ""
 
     ckey = cache.cache_key(
-        str(project["id"]), prompt_rendered, effective_tier, max_tokens, schema_s, attachment_digest
+        str(project["id"]),
+        prompt_rendered,
+        effective_tier,
+        max_tokens,
+        schema_s,
+        attachment_digest,
+        route,
     )
     ttl = int(project["cache_ttl_seconds"] or 0)
     if ttl > 0:
@@ -310,12 +395,25 @@ async def ask(
                 "tier_used": effective_tier,
                 "attempts": 0,
                 "key_id": None,
-                "key_source": None,
+                "key_source": "local" if explicit else None,
                 "input_tokens": hit.get("input_tokens") or 0,
                 "output_tokens": hit.get("output_tokens") or 0,
                 "estimated_cost_usd": hit.get("estimated_cost_usd") or 0.0,
                 "models_chain": hit.get("models_chain") or [],
             }
+
+    if explicit:
+        return await _ask_ollama(
+            redis,
+            messages=messages,
+            tier=effective_tier,
+            max_tokens=max_tokens,
+            json_schema=json_schema,
+            model=explicit[1],
+            ttl=ttl,
+            ckey=ckey,
+            temperature=temperature,
+        )
 
     try:
         res = await _cascade(

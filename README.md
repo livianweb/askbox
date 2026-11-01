@@ -66,7 +66,7 @@ En Docker, el contenedor `api` no lee `.env` del repo (está enmascarado). Para 
 | GET | `/v1/projects/{id}/prompts/{name}` | Última versión (`?version=N` opcional) |
 | GET | `/v1/projects/{id}/prompts/{name}/versions` | Historial de versiones |
 | DELETE | `/v1/projects/{id}/prompts/{name}` | Borrar todas las versiones |
-| POST | `/v1/ask` | Sesión o `Authorization: Bearer ab_live_…` (scope `ask:read`). Cuerpo: `prompt` **o** `prompt_template` + `variables`, `system?`, `project_id?` (ignorado con token de proyecto), `tier`, `max_output_tokens`, `attachments?`, `task?` (ver adjuntos abajo) |
+| POST | `/v1/ask` | Sesión o `Authorization: Bearer ab_live_…` (scope `ask:read`). Cuerpo: `prompt` **o** `prompt_template` + `variables`, `system?`, `project_id?` (ignorado con token de proyecto), `tier`, `max_output_tokens`, `attachments?`, `task?`, `provider?` (`ollama`), `model?` (ver Ollama abajo) |
 | POST | `/v1/ask/stream` | Igual auth/cuerpo que `/v1/ask`; respuesta **SSE** (`text/event-stream`): eventos `delta` con `text` y `done` con metadatos (`request_id`, tokens, etc.) |
 | POST | `/v1/ocr` | Sesión o `Authorization: Bearer ab_live_…` (scope `ask:read`). OCR de **una página** de PDF o imagen (Tesseract + poppler). Cuerpo: `{data_base64, mime, page?=1, lang?="spa", psm?=4, words?=false}`. Ver «OCR» abajo |
 | POST | `/v1/batch` | Solo sesión. `{project_id?, tier, max_output_tokens, items:[{prompt, system?}]}` → `{job_id, status, total}`; encola worker arq |
@@ -182,9 +182,37 @@ curl -b cj -s $A/v1/projects/$PID/usage?days=7
 TOK=$(curl -b cj -s $J -d '{"label":"script","scopes":["ask:read"]}' $A/v1/projects/$PID/access-tokens | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
 curl -b cj -s $J -d '{"name":"saludo","user_template":"Hola {{quien}}","default_tier":"fast"}' $A/v1/projects/$PID/prompts
 curl -s $J -H "Authorization: Bearer $TOK" -d '{"prompt_template":"saludo","variables":{"quien":"mundo"}}' $A/v1/ask
+
+# Ollama local (no usa Gemini ni OpenRouter). Mismo cuerpo en POST /v1/ask/stream.
+curl -s $J -H "Authorization: Bearer $TOK" \
+  -d '{"prompt":"Di hola en una frase","provider":"ollama"}' $A/v1/ask
 ```
 
-Sin clave de proveedor, `/v1/ask` responde `502 no_provider_key` y deja la traza en `requests`. Con claves de sistema (`GEMINI_API_KEY` / `OPENROUTER_API_KEY` en `.env`) y proyecto con `allow_system_keys=true`, se usan como respaldo.
+Sin clave de proveedor, `/v1/ask` responde `502 no_provider_key` y deja la traza en `requests`. Con claves de sistema (`GEMINI_API_KEY` / `OPENROUTER_API_KEY` en `.env`) y proyecto con `allow_system_keys=true`, se usan como respaldo. Ese camino no se usa si pides Ollama (abajo).
+
+### Ollama local (`provider=ollama`)
+
+Ruta explícita: la petición va solo a Ollama y **no** entra en la cascada de Gemini/OpenRouter ni en el keypool. Si omites `provider` y no mandas `model` con prefijo `ollama/`, el comportamiento anterior no cambia. Ollama no está en la cascada automática.
+
+Ollama debe estar en la red Compose, servicio `ollama`, puerto `11434`. La API llama a `{OLLAMA_BASE_URL}/v1/chat/completions` (compatible OpenAI). No hace falta clave.
+
+| Variable | Default | Uso |
+|---|---|---|
+| `OLLAMA_BASE_URL` | `http://ollama:11434` | Base del servicio. También vale `…/v1`. Desde el host: `http://127.0.0.1:11434` |
+| `OLLAMA_MODEL` | `qwen2.5-coder:14b` | Modelo si el cuerpo no trae `model` |
+| `OLLAMA_TIMEOUT` | `120` | Segundos de espera de esa llamada (el 14B local suele pasar de `ASKBOX_PROVIDER_TIMEOUT`) |
+
+```bash
+# Modelo por defecto (OLLAMA_MODEL):
+curl -s $J -H "Authorization: Bearer $TOK" \
+  -d '{"prompt":"Di hola en una frase","provider":"ollama"}' $A/v1/ask
+
+# Modelo concreto (equivalente: "model":"ollama/qwen2.5-coder:14b" sin provider):
+curl -s $J -H "Authorization: Bearer $TOK" \
+  -d '{"prompt":"Di hola en una frase","provider":"ollama","model":"qwen2.5-coder:14b"}' $A/v1/ask
+```
+
+`tier` se guarda en la traza y no elige el modelo. Adjuntos con Ollama: `422 ollama_no_attachments`. Si Ollama no responde o el texto no cumple `json_schema`: `502 provider_failed` (no hay reintento contra Gemini). La respuesta trae `provider: "ollama"`; en `requests.key_source` queda `local`. Coste estimado `0`.
 
 Tests sin red: `docker run --rm -v "$PWD/api":/srv -w /srv -e PYTHONPATH=/srv askbox-api python -m unittest discover -s tests`
 
@@ -213,7 +241,7 @@ Variables que lee la API (`api/app/config.py` → `api/app/mailer.py`): `ASKBOX_
 
 ## Diseño (resumen)
 
-- `api/app/llm/`: `router.py` (caché → tier → peers same-class en todos los proveedores con clave → bajada de tier), `providers/` (gemini, openrouter), `keypool.py`, `cache.py`, `catalog.py` (`peer_chain`).
+- `api/app/llm/`: `router.py` (caché → tier → peers same-class en todos los proveedores con clave → bajada de tier; atajo `provider=ollama` sin cascada), `providers/` (gemini, openrouter, ollama), `keypool.py`, `cache.py`, `catalog.py` (`peer_chain`).
 - Modelos y cadenas en la tabla `model_catalog` (seeds/migraciones en `api/app/migrations/`); ajustar `enabled`, `priority`, `tier` y costes en BD (o nueva migración), no en código.
 - Seguridad: AES-256-GCM con AAD `proyecto:proveedor`, nonce aleatorio, `key_version`; la API nunca devuelve claves; logs sin prompts (solo longitud y hash truncado).
 - Límites: prompt ≤ 20000 chars, `max_output_tokens` ≤ 8192, rate limit Redis (`ASKBOX_ASK_RATE_PER_MIN`, 30/min por usuario, token `ab_live_` y proyecto en `/v1/ask`; login 10/min por IP).

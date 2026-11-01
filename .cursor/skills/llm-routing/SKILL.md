@@ -51,9 +51,13 @@ El runtime **solo** lee filas con `enabled = true` (`catalog.peer_chain`, `cost_
 2. No añadir slugs `gemini-*` / `*:free` como constantes en `router.py` o providers para runtime de producción.
 3. Migración o seed SQL documentada; opcionalmente datos de prueba solo en `tests/`.
 
+## Ruta explícita a Ollama (fuera de la cascada)
+
+`provider=ollama` o `model=ollama/<slug>` en `POST /v1/ask` y `/v1/ask/stream` llama solo a Ollama (`OLLAMA_BASE_URL`, default `http://ollama:11434`, modelo `OLLAMA_MODEL`). No usa keypool, `model_catalog` ni peers Gemini/OpenRouter, y un fallo **no** cae a la cascada. Sin ese parámetro, el orden de abajo no cambia. No añadir Ollama a `PROVIDER_ORDER` ni al `CHECK` de `model_catalog` hasta que se pida la cascada automática.
+
 ## Orden obligatorio de decisión
 
-Por cada `POST /v1/ask`, respetar este orden:
+Por cada `POST /v1/ask` **sin** ruta explícita a Ollama, respetar este orden:
 
 1. **Caché** — clave `sha256(project_id + prompt_rendered + tier + max_tokens + json_schema)` en Redis; TTL por proyecto.
 2. **Cooldown de clave** — excluir filas `api_keys` con `cooldown_until > now`; pool por proyecto.
@@ -84,7 +88,8 @@ Heredar el estilo de agentshop-x `gemini.py`:
 |---------|-----------------|
 | `api/app/llm/router.py` | Orquestación tier → cadena → respuesta unificada |
 | `api/app/llm/catalog.py` | `peer_chain`, `TIER_CLASSES`, orden cross-provider |
-| `api/app/llm/providers/` | Gemini, OpenRouter |
+| `api/app/llm/providers/` | Gemini, OpenRouter; Ollama solo si el cliente lo pide (`ollama.py`) |
+| `api/app/llm/ollama_route.py` | Parseo de `provider` / `model` explícitos |
 | `api/app/llm/keypool.py` | Selección de clave, cooldown, fallos consecutivos |
 | `api/app/llm/cache.py` | Lectura/escritura Redis de respuestas |
 

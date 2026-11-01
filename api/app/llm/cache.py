@@ -15,8 +15,13 @@ def cache_key(
     max_tokens: int,
     json_schema: str = "",
     attachment_digest: str = "",
+    route: str = "",
 ) -> str:
-    raw = "\x1f".join([project_id, prompt_rendered, tier, str(max_tokens), json_schema, attachment_digest])
+    # `route` vacío mantiene la clave de la cascada Gemini/OpenRouter.
+    parts = [project_id, prompt_rendered, tier, str(max_tokens), json_schema, attachment_digest]
+    if route:
+        parts.append(route)
+    raw = "\x1f".join(parts)
     return "askbox:cache:" + hashlib.sha256(raw.encode()).hexdigest()
 
 
