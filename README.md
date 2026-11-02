@@ -109,7 +109,9 @@ Archivos **inline** en el JSON (no se guardan en servidor). La respuesta puede i
 
 sanitize (clawBox) llama aquí antes de Ollama (`qwen2.5-coder:7b`, `MAX_LOADED=1`). askBox **no** recorta el hilo: solo elige un perfil fijo para que el prefijo del 7B se reutilice. sanitize aplica `keep_messages`, `system` y `max_out`. Las preguntas triviales las filtra sanitize y no llegan a este endpoint.
 
-Prueba el `flash-lite` de versión más baja del catálogo (luego `flash`, luego `8b`). Un HTTP 404 se anota en el log (`route gemini 404 model=…`) y se pasa al siguiente id; no se vuelve a llamar. La migración `016` añade `gemini-2.0-flash-lite`, `gemini-2.0-flash` y `gemini-1.5-flash-8b`, y apaga los slugs de la semilla que esta API responde 404 (`gemini-2.5-flash-lite` y los `gemini-3.*`). `max_tokens` 32, thinking apagado, conexión reutilizada. OpenRouter no se llama.
+Orden de `generateContent`: `gemini-flash-lite-latest`, luego `gemini-2.5-flash-lite`, luego `gemini-flash-latest`. `gemini-2.0-*` y `gemini-1.5-flash-8b` no se llaman (404). La clave sale del proyecto en BD; `GEMINI_API_KEY` vacío no impide la ruta si hay una clave Gemini activa. Un HTTP 404 se anota (`route gemini 404 model=…`) y se prueba el siguiente id.
+
+La primera llamada en frío puede tardar unos 15–20 s. El presupuesto por defecto (650 ms, tope 780) sigue por debajo del corte de sanitize (~800 ms): en ese caso la respuesta es `standard` con `keep_messages=4` y `system=lean`, y la llamada no se cancela para que el modelo quede caliente. La siguiente, ya caliente, puede devolver el perfil real dentro del presupuesto. Subir `ASKBOX_ROUTE_TIMEOUT_MS` no alarga el corte de sanitize; una decisión síncrona en frío no cabe en ~800 ms.
 
 | Perfil | `keep_messages` | `system` | `max_out` |
 |---|---|---|---|
@@ -123,7 +125,7 @@ Variables (default entre paréntesis):
 
 - `ASKBOX_TOKEN` — secreto de servicio opcional. Si el Bearer **no** empieza por `ab_live_`, se compara con esta variable. Un `ab_live_…` (scope `ask:read`) se valida como en `/v1/ask` y no hace falta duplicarlo en el entorno.
 - `ASKBOX_ROUTE_PROJECT_ID` — uuid del proyecto cuyas claves usa el secreto de servicio. Si falta, se elige el proyecto con `allow_system_keys` o con una clave activa.
-- `ASKBOX_ROUTE_TIMEOUT_MS` (650, tope 780) — presupuesto de la llamada a Gemini, por debajo del timeout ~800 ms de sanitize. Si el `.env` del host sigue en 500, quítalo o súbelo: ese valor pisa el default.
+- `ASKBOX_ROUTE_TIMEOUT_MS` (650, tope 780) — espera síncrona antes de devolver `standard`+`system=lean`. La llamada a Gemini puede seguir en segundo plano. Una decisión real en frío (~15–20 s) no cabe aquí ni en el timeout de sanitize.
 - `ASKBOX_ROUTE_RATE_PER_MIN` (120, `0` = sin límite).
 
 ```bash

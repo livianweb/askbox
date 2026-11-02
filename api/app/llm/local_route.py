@@ -65,32 +65,59 @@ def pack(profile: str, reason: str) -> dict[str, Any]:
     }
 
 
-def gemini_speed_rank(slug: str) -> tuple:
-    """Menor tupla = se prueba antes. flash-lite, luego flash, luego 8b."""
+# Alias estable que generateContent acepta. El id versionado va en el catálogo.
+ROUTE_ALIAS_FIRST = "gemini-flash-lite-latest"
+ROUTE_ALIAS_FLASH = "gemini-flash-latest"
+
+
+def route_slug_retired(slug: str) -> bool:
+    """2.0, 1.5 y 8b responden 404. 2.5-flash (sin lite) ya no está para cuentas nuevas."""
     s = (slug or "").lower()
-    if "flash-lite" in s or "flashlite" in s:
-        family = 0
-    elif "8b" in s:
-        family = 2
-    elif "flash" in s:
-        family = 1
-    elif "lite" in s:
-        family = 3
-    else:
-        family = 9
+    if "8b" in s:
+        return True
     nums = [int(n) for n in re.findall(r"\d+", s)]
-    major = nums[0] if nums else 99
+    if not nums:
+        return False
+    major, minor = nums[0], nums[1] if len(nums) > 1 else 0
+    if major <= 1:
+        return True
+    if major == 2 and minor == 0:
+        return True
+    if major == 2 and minor == 5 and "lite" not in s:
+        return True
+    return False
+
+
+def gemini_speed_rank(slug: str) -> tuple:
+    """Menor tupla = se prueba antes. latest lite, luego lite versionado, luego latest flash."""
+    s = (slug or "").lower()
+    nums = [int(n) for n in re.findall(r"\d+", s)]
+    major = nums[0] if nums else 0
     minor = nums[1] if len(nums) > 1 else 0
-    return (family, major, minor, len(s), s)
+    if s == ROUTE_ALIAS_FIRST:
+        return (0, 0, 0, s)
+    if s == ROUTE_ALIAS_FLASH:
+        return (2, 0, 0, s)
+    if route_slug_retired(s):
+        return (9, major, minor, s)
+    if "flash-lite" in s or "flashlite" in s:
+        # 2.x antes que 3.x; latest ya salió arriba.
+        family = 1 if major < 3 else 4
+        return (family, major, minor, s)
+    if "flash" in s:
+        return (3, major, minor, s)
+    if "lite" in s:
+        return (5, major, minor, s)
+    return (7, major, minor, s)
 
 
 def order_route_models(slugs: list[str]) -> list[str]:
-    """Orden de prueba. Los 404 se descartan fuera, no aquí."""
+    """Orden de prueba. Descarta 2.0, 1.5 y 8b. Los 404 se filtran fuera."""
     usable: list[str] = []
     seen: set[str] = set()
-    for raw in slugs:
+    for raw in list(slugs) + [ROUTE_ALIAS_FIRST, ROUTE_ALIAS_FLASH]:
         slug = (raw or "").strip()
-        if not slug or slug in seen:
+        if not slug or slug in seen or route_slug_retired(slug):
             continue
         seen.add(slug)
         usable.append(slug)
