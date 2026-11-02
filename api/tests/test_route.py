@@ -41,9 +41,11 @@ class ProfileContractTests(unittest.TestCase):
         self.assertIn(full["system"], ("full", "summary"))
         self.assertEqual(full["max_out"], 256)
 
-    def test_fallback_prefers_lean(self):
-        self.assertEqual(fallback_id(["full", "lean", "standard"]), "lean")
-        self.assertEqual(fallback_id(["full", "standard"]), "standard")
+    def test_fallback_is_standard_not_lean(self):
+        self.assertEqual(fallback_id(["full", "lean", "standard"]), "standard")
+        self.assertEqual(fallback_id(["full", "lean"]), "full")
+        self.assertEqual(fallback_id(["lean"]), "lean")
+        self.assertEqual(pack(fallback_id(["lean", "standard", "full"]), "timeout")["keep_messages"], 4)
 
     def test_parse_json_fence_and_word(self):
         allowed = ["lean", "standard", "full"]
@@ -81,28 +83,38 @@ class ChooseProfileTests(unittest.TestCase):
         out = asyncio.run(route_mod.choose_profile(_signals(), cloud, 1.0))
         self.assertEqual(out, pack("lean", "hi"))
 
-    def test_timeout_is_lean(self):
+    def test_timeout_is_standard(self):
         async def cloud(_messages):
             await asyncio.sleep(1)
             return '{"profile":"full","reason":"too late"}'
 
         out = asyncio.run(route_mod.choose_profile(_signals(), cloud, 0.05))
-        self.assertEqual(out, pack("lean", "timeout"))
+        self.assertEqual(out, pack("standard", "timeout"))
+        self.assertEqual(out["keep_messages"], 4)
 
-    def test_cloud_error_and_garbage_stay_lean(self):
+    def test_explicit_lean_still_wins(self):
+        async def cloud(_messages):
+            return '{"profile":"lean","reason":"trivial"}'
+
+        out = asyncio.run(route_mod.choose_profile(_signals(), cloud, 1.0))
+        self.assertEqual(out["profile"], "lean")
+        self.assertEqual(out["keep_messages"], 2)
+
+    def test_cloud_error_and_garbage_stay_standard(self):
         async def boom(_messages):
             raise RuntimeError("down")
 
         err = asyncio.run(route_mod.choose_profile(_signals(), boom, 1.0))
-        self.assertEqual(err["profile"], "lean")
+        self.assertEqual(err["profile"], "standard")
         self.assertEqual(err["reason"], "cloud_unavailable")
+        self.assertEqual(err["keep_messages"], 4)
 
         async def garbage(_messages):
             return "no idea"
 
         bad = asyncio.run(route_mod.choose_profile(_signals(), garbage, 1.0))
         self.assertEqual(bad["reason"], "invalid_profile")
-        self.assertEqual(bad["profile"], "lean")
+        self.assertEqual(bad["profile"], "standard")
 
 
 class RouteHttpTests(unittest.TestCase):
@@ -124,16 +136,17 @@ class RouteHttpTests(unittest.TestCase):
     def tearDown(self):
         self._env.stop()
 
-    def test_no_project_returns_lean(self):
+    def test_no_project_returns_standard(self):
         res = self.client.post(
             "/v1/route",
             headers={"Authorization": "Bearer route-test-token"},
             json=_signals(),
         )
         self.assertEqual(res.status_code, 200, res.text)
-        self.assertEqual(res.json()["profile"], "lean")
+        self.assertEqual(res.json()["profile"], "standard")
         self.assertEqual(res.json()["reason"], "cloud_unavailable")
-        self.assertEqual(res.json()["system"], "lean")
+        self.assertEqual(res.json()["system"], "summary")
+        self.assertEqual(res.json()["keep_messages"], 4)
 
     def test_missing_bearer_is_401(self):
         res = self.client.post("/v1/route", json=_signals())
@@ -173,7 +186,37 @@ class RouteHttpTests(unittest.TestCase):
         self.assertEqual(body["max_out"], 128)
         self.assertEqual(body["reason"], "follow-up")
 
-    def test_slow_cloud_returns_lean_200(self):
+    def test_default_timeout_stays_under_sanitize(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ASKBOX_ROUTE_TIMEOUT_MS", None)
+            self.assertAlmostEqual(route_mod.route_timeout_s(), 0.65)
+        with mock.patch.dict(os.environ, {"ASKBOX_ROUTE_TIMEOUT_MS": "900"}, clear=False):
+            self.assertAlmostEqual(route_mod.route_timeout_s(), 0.78)
+
+    def test_cloud_text_uses_gemini_only(self):
+        seen = {}
+
+        async def fake_ask(*_args, **kwargs):
+            seen.update(kwargs)
+            return {"text": '{"profile":"full","reason":"ok"}'}
+
+        project = {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "default_tier": "fast",
+            "cache_ttl_seconds": 0,
+            "allow_system_keys": True,
+        }
+        with mock.patch.object(route_mod.llm_router, "ask", fake_ask):
+            text = asyncio.run(
+                route_mod.cloud_text(None, None, project, [{"role": "user", "content": "x"}])
+            )
+        self.assertIn("full", text)
+        self.assertEqual(seen["providers"], ("gemini",))
+        self.assertNotIn("openrouter", seen["providers"])
+        self.assertFalse(seen["downgrade"])
+        self.assertEqual(seen["tier"], "fast")
+
+    def test_slow_cloud_returns_standard_200(self):
         async def fake_project(_pool, _caller):
             return {"id": "p", "default_tier": "fast", "cache_ttl_seconds": 0, "allow_system_keys": True}
 
@@ -190,9 +233,10 @@ class RouteHttpTests(unittest.TestCase):
                 json=_signals(),
             )
         self.assertEqual(res.status_code, 200, res.text)
-        self.assertEqual(res.json()["profile"], "lean")
+        self.assertEqual(res.json()["profile"], "standard")
         self.assertEqual(res.json()["reason"], "timeout")
-        self.assertEqual(res.json()["keep_messages"], 2)
+        self.assertEqual(res.json()["keep_messages"], 4)
+        self.assertEqual(res.json()["system"], "summary")
 
 
 if __name__ == "__main__":

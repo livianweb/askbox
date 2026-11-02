@@ -1,9 +1,10 @@
 """POST /v1/route — controlador de contexto para el 7B local (sanitize / OpenClaw).
 
 sanitize envía señales cortas, no el hilo completo. Un modelo de nube del tier
-`fast` (Gemini u OpenRouter, mismas claves que `/v1/ask`) elige un perfil fijo.
-sanitize aplica `keep_messages`, `system` y `max_out`. Si la nube no responde
-dentro del presupuesto, la respuesta es el perfil lean (HTTP 200).
+`fast` elige un perfil fijo. Este endpoint solo llama a Gemini (el modelo fast
+ya configurado en el catálogo); OpenRouter no entra, para que un 402 no coma
+el presupuesto. sanitize aplica `keep_messages`, `system` y `max_out`. Si la
+nube no responde, la respuesta es standard (keep=4), no lean.
 
 Auth (`Authorization: Bearer …`):
 - Token de proyecto `ab_live_…` con scope `ask:read` (el valor que sanitize
@@ -17,10 +18,10 @@ Auth (`Authorization: Bearer …`):
 Env:
 - `ASKBOX_TOKEN` — secreto de servicio opcional. Vacío = solo `ab_live_…` o sesión.
 - `ASKBOX_ROUTE_PROJECT_ID` — uuid de proyecto para el secreto de servicio.
-- `ASKBOX_ROUTE_TIMEOUT_MS` — presupuesto de la llamada a nube (default 500, tope 650;
-  sanitize corta ~700 ms y también cae a lean).
-- `ASKBOX_ROUTE_RATE_PER_MIN` — default 120. Si se supera, HTTP 200 con perfil lean
-  y `reason=rate_limited` (el turno local no se bloquea). 0 desactiva el límite.
+- `ASKBOX_ROUTE_TIMEOUT_MS` — presupuesto de la llamada a Gemini (default 650, tope 780;
+  sanitize corta ~800 ms).
+- `ASKBOX_ROUTE_RATE_PER_MIN` — default 120. Si se supera, HTTP 200 con perfil standard
+  y `reason=rate_limited`. 0 desactiva el límite.
 
 Ejemplo:
 
@@ -32,7 +33,7 @@ Ejemplo:
 
 Timeout:
 
-    {"profile":"lean","keep_messages":2,"system":"lean","max_out":96,"reason":"timeout"}
+    {"profile":"standard","keep_messages":4,"system":"summary","max_out":128,"reason":"timeout"}
 """
 from __future__ import annotations
 
@@ -65,7 +66,7 @@ log = logging.getLogger("askbox.route")
 
 router = APIRouter(prefix="/v1", tags=["route"])
 
-_TIMEOUT_CAP_MS = 650.0
+_TIMEOUT_CAP_MS = 780.0
 _TIMEOUT_FLOOR_MS = 50.0
 
 
@@ -105,11 +106,11 @@ def service_token() -> str:
 
 
 def route_timeout_s() -> float:
-    raw = (os.getenv("ASKBOX_ROUTE_TIMEOUT_MS") or "500").strip()
+    raw = (os.getenv("ASKBOX_ROUTE_TIMEOUT_MS") or "650").strip()
     try:
         ms = float(raw)
     except ValueError:
-        ms = 500.0
+        ms = 650.0
     ms = min(max(ms, _TIMEOUT_FLOOR_MS), _TIMEOUT_CAP_MS)
     return ms / 1000.0
 
@@ -182,8 +183,13 @@ async def load_project(pool, caller: dict[str, Any]):
     )
 
 
+# Solo Gemini: el fast del catálogo (Flash / Flash-Lite según priority).
+# OpenRouter queda fuera para que un 402 no agote ASKBOX_ROUTE_TIMEOUT_MS.
+ROUTE_PROVIDERS = ("gemini",)
+
+
 async def cloud_text(pool, redis, project, messages: list[dict]) -> str:
-    """Tier fast del catálogo. Sin Ollama y sin allin."""
+    """Tier fast, solo Gemini. Sin bajar a balanced/strong ni a OpenRouter."""
     res = await llm_router.ask(
         pool,
         redis,
@@ -193,6 +199,8 @@ async def cloud_text(pool, redis, project, messages: list[dict]) -> str:
         max_tokens=64,
         json_schema=ROUTE_SCHEMA,
         temperature=0.0,
+        providers=ROUTE_PROVIDERS,
+        downgrade=False,
     )
     return str(res.get("text") or "")
 
@@ -236,8 +244,8 @@ def _bucket(caller: dict[str, Any]) -> str:
         "o con el secreto `ASKBOX_TOKEN`. "
         "Cuerpo: last_user, n_messages, approx_chars, has_code, has_tools, profiles. "
         "Respuesta: profile (lean|standard|full) y la tupla fija keep_messages, system, max_out, reason. "
-        "Timeout, nube caída o límite de ritmo: HTTP 200 con el perfil más corto permitido "
-        "(lean si está en la lista)."
+        "Solo Gemini (tier fast del catálogo). Timeout, nube caída o límite de ritmo: HTTP 200 "
+        "con standard (keep=4) si está en profiles. Lean solo si la nube lo elige."
     ),
 )
 async def route_turn(body: RouteIn, request: Request):
