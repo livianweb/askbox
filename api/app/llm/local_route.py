@@ -34,8 +34,18 @@ ROUTE_SCHEMA: dict[str, Any] = {
     },
 }
 
-# Una línea fija. El turno va en el user, recortado.
-ROUTER_SYSTEM = 'JSON {"profile":"lean|standard|full","reason":"w"}.'
+# Una línea. El modelo 3.5 si no, contesta como chat.
+ROUTER_SYSTEM = "Only JSON. profile=lean|standard|full. No chat."
+
+# Forma que generateContent acepta (tipos en mayúsculas).
+ROUTE_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "OBJECT",
+    "properties": {
+        "profile": {"type": "STRING"},
+        "reason": {"type": "STRING"},
+    },
+    "required": ["profile"],
+}
 
 ROUTE_MAX_TOKENS = 32
 

@@ -58,6 +58,7 @@ from app.llm.errors import LLMError
 from app.llm.local_route import (
     PROFILE_IDS,
     ROUTE_MAX_TOKENS,
+    ROUTE_RESPONSE_SCHEMA,
     build_messages,
     fallback_id,
     is_fallback_reason,
@@ -283,6 +284,7 @@ async def cloud_text(pool, redis, project, messages: list[dict], attempt: dict |
                 temperature=0.0,
                 fast=True,
                 timeout=25.0,
+                json_schema=ROUTE_RESPONSE_SCHEMA,
             )
             return str(res.get("text") or "")
         except LLMError as exc:
@@ -310,6 +312,7 @@ async def cloud_text(pool, redis, project, messages: list[dict], attempt: dict |
                 temperature=0.0,
                 fast=True,
                 timeout=25.0,
+                json_schema=ROUTE_RESPONSE_SCHEMA,
             )
         except LLMError as exc:
             if not _missing_model(exc):

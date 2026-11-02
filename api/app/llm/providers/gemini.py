@@ -109,14 +109,18 @@ async def complete(
     grounding: bool = False,
     fast: bool = False,
     timeout: float | None = None,
+    json_schema: dict | None = None,
 ) -> dict:
     system, contents = _to_contents(messages)
     payload: dict = {
         "contents": contents,
         "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
     }
-    if fast:
-        # Sin thinking: si no, el presupuesto de salida se va en razonar y /v1/route no vuelve a tiempo.
+    if json_schema:
+        payload["generationConfig"]["responseMimeType"] = "application/json"
+        payload["generationConfig"]["responseSchema"] = json_schema
+    elif fast:
+        # Sin schema, apaga thinking. Con schema el formato ya está forzado y el alias latest rechaza thinkingBudget.
         payload["generationConfig"]["thinkingConfig"] = _thinking_off(model)
     if grounding:
         # Google Search grounding (etapa web de mode=allin). Sin esto el payload no cambia.
