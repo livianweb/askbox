@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.llm.local_route import PROFILES, fallback_id, pack, parse_choice  # noqa: E402
+from app.llm.local_route import PROFILES, fallback_id, pack, parse_choice, pick_fastest_gemini  # noqa: E402
 from app.routers import route as route_mod  # noqa: E402
 
 
@@ -57,6 +57,25 @@ class ProfileContractTests(unittest.TestCase):
         self.assertIsNone(parse_choice('{"profile":"huge"}', allowed))
         self.assertIsNone(parse_choice('{"profile":"full"}', ["lean", "standard"]))
 
+    def test_pick_fastest_gemini_prefers_8b_then_old_lite(self):
+        # Slugs de prueba; en producción salen de model_catalog, no de una constante.
+        self.assertEqual(
+            pick_fastest_gemini(
+                [
+                    "gemini-3.5-flash",
+                    "gemini-3.5-flash-lite",
+                    "gemini-2.5-flash-lite",
+                    "gemini-2.5-pro",
+                ]
+            ),
+            "gemini-2.5-flash-lite",
+        )
+        self.assertEqual(
+            pick_fastest_gemini(["gemini-2.5-flash-lite", "gemini-1.5-flash-8b"]),
+            "gemini-1.5-flash-8b",
+        )
+        self.assertIsNone(pick_fastest_gemini([]))
+
     def test_pack_collapses_reason(self):
         out = pack("lean", "  timeout \n now ")
         self.assertEqual(out["reason"], "timeout now")
@@ -66,7 +85,8 @@ class ProfileContractTests(unittest.TestCase):
 class ChooseProfileTests(unittest.TestCase):
     def test_cloud_profile_is_mapped_not_tuned(self):
         async def cloud(_messages):
-            self.assertIn('"has_code":true', _messages[-1]["content"])
+            self.assertIn("code=1", _messages[-1]["content"])
+            self.assertLess(len(_messages[0]["content"]) + len(_messages[-1]["content"]), 400)
             return '{"profile":"FULL","reason":"long code"}'
 
         out = asyncio.run(route_mod.choose_profile(_signals(), cloud, 1.0))
@@ -166,7 +186,7 @@ class RouteHttpTests(unittest.TestCase):
             self.assertEqual(caller["mode"], "service")
             return {"id": "00000000-0000-0000-0000-000000000001", "default_tier": "fast", "cache_ttl_seconds": 0, "allow_system_keys": True}
 
-        async def fake_cloud(_pool, _redis, _project, messages):
+        async def fake_cloud(_pool, _redis, _project, messages, _attempt=None):
             self.assertEqual(messages[0]["role"], "system")
             return '{"profile":"standard","reason":"follow-up"}'
 
@@ -193,34 +213,67 @@ class RouteHttpTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"ASKBOX_ROUTE_TIMEOUT_MS": "900"}, clear=False):
             self.assertAlmostEqual(route_mod.route_timeout_s(), 0.78)
 
-    def test_cloud_text_uses_gemini_only(self):
+    def test_cloud_text_calls_fastest_lite_once(self):
         seen = {}
 
-        async def fake_ask(*_args, **kwargs):
-            seen.update(kwargs)
-            return {"text": '{"profile":"full","reason":"ok"}'}
+        class Pool:
+            async def fetch(self, *_args):
+                return [
+                    {"slug": "gemini-3.5-flash"},
+                    {"slug": "gemini-3.5-flash-lite"},
+                    {"slug": "gemini-2.5-flash-lite"},
+                ]
+
+        async def fake_keys(_pool, _project, provider):
+            self.assertEqual(provider, "gemini")
+            from app.llm.keypool import KeyHandle
+
+            return [KeyHandle("gemini", "not-a-real-key", None, "system")]
+
+        async def fake_complete(messages, **kwargs):
+            seen["kwargs"] = kwargs
+            seen["messages"] = messages
+            return {"text": '{"profile":"full","reason":"ok"}', "model": kwargs["model"]}
 
         project = {
-            "id": "00000000-0000-0000-0000-000000000001",
+            "id": "00000000-0000-0000-0000-000000000099",
             "default_tier": "fast",
             "cache_ttl_seconds": 0,
             "allow_system_keys": True,
         }
-        with mock.patch.object(route_mod.llm_router, "ask", fake_ask):
+        route_mod._HOT.pop(str(project["id"]), None)
+        with mock.patch.object(route_mod.keypool, "candidates", fake_keys), mock.patch.object(
+            route_mod.gemini, "complete", fake_complete
+        ):
             text = asyncio.run(
-                route_mod.cloud_text(None, None, project, [{"role": "user", "content": "x"}])
+                route_mod.cloud_text(Pool(), None, project, [{"role": "user", "content": "x"}])
             )
+        route_mod._HOT.pop(str(project["id"]), None)
         self.assertIn("full", text)
-        self.assertEqual(seen["providers"], ("gemini",))
-        self.assertNotIn("openrouter", seen["providers"])
-        self.assertFalse(seen["downgrade"])
-        self.assertEqual(seen["tier"], "fast")
+        self.assertEqual(seen["kwargs"]["model"], "gemini-2.5-flash-lite")
+        self.assertEqual(seen["kwargs"]["max_tokens"], 32)
+        self.assertTrue(seen["kwargs"]["fast"])
+        self.assertEqual(seen["kwargs"]["temperature"], 0.0)
+
+    def test_timeout_log_names_model(self):
+        async def slow(_messages):
+            await asyncio.sleep(1)
+            return "{}"
+
+        attempt = {"model": "gemini-2.5-flash-lite"}
+        with self.assertLogs("askbox.route", level="INFO") as logs:
+            out = asyncio.run(route_mod.choose_profile(_signals(), slow, 0.05, attempt))
+        self.assertEqual(out["profile"], "standard")
+        self.assertEqual(out["reason"], "timeout")
+        joined = "\n".join(logs.output)
+        self.assertIn("route timeout model=gemini-2.5-flash-lite", joined)
+        self.assertIn("latency_ms=", joined)
 
     def test_slow_cloud_returns_standard_200(self):
         async def fake_project(_pool, _caller):
             return {"id": "p", "default_tier": "fast", "cache_ttl_seconds": 0, "allow_system_keys": True}
 
-        async def slow(_pool, _redis, _project, _messages):
+        async def slow(_pool, _redis, _project, _messages, _attempt=None):
             await asyncio.sleep(1)
             return '{"profile":"full","reason":"late"}'
 

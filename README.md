@@ -109,7 +109,7 @@ Archivos **inline** en el JSON (no se guardan en servidor). La respuesta puede i
 
 sanitize (clawBox) llama aquí antes de Ollama (`qwen2.5-coder:7b`, `MAX_LOADED=1`). askBox **no** recorta el hilo: solo elige un perfil fijo para que el prefijo del 7B se reutilice. sanitize aplica `keep_messages`, `system` y `max_out`. Las preguntas triviales las filtra sanitize y no llegan a este endpoint.
 
-La decisión la toma el tier `fast` de Gemini ya configurado en el catálogo (Flash o Flash-Lite, el de menor `priority`). OpenRouter no se llama en este endpoint: un 402 no debe gastar el presupuesto. Claves: las del proyecto o `GEMINI_API_KEY` si `allow_system_keys`. `/v1/ask` no cambia de orden.
+Una sola llamada al Gemini **más rápido** habilitado en el catálogo: slug con `8b` si existe, si no el `flash-lite` de versión más baja (no el de mayor `priority`, que puede ser un Flash lento). `max_tokens` 32, thinking apagado, conexión HTTP reutilizada. OpenRouter no se llama. Clave: la del proyecto o `GEMINI_API_KEY` si `allow_system_keys`. `/v1/ask` no cambia.
 
 | Perfil | `keep_messages` | `system` | `max_out` |
 |---|---|---|---|

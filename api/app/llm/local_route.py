@@ -34,13 +34,10 @@ ROUTE_SCHEMA: dict[str, Any] = {
     },
 }
 
-# Prefijo estable. Los datos del turno van solo en el mensaje user.
-ROUTER_SYSTEM = (
-    "Route one turn for a local 7B coder. "
-    "Pick exactly one profile id from the allowed list. "
-    "lean = trivial question. standard = short follow-up. full = long task or code. "
-    'Reply JSON only: {"profile":"<id>","reason":"<=12 words"}.'
-)
+# Una línea fija. El turno va en el user, recortado.
+ROUTER_SYSTEM = 'JSON {"profile":"lean|standard|full","reason":"w"}.'
+
+ROUTE_MAX_TOKENS = 32
 
 _PROFILE_WORD = re.compile(r"\b(lean|standard|full)\b", re.I)
 _FALLBACK_REASONS = frozenset({"timeout", "cloud_unavailable", "invalid_profile", "rate_limited"})
@@ -68,21 +65,47 @@ def pack(profile: str, reason: str) -> dict[str, Any]:
     }
 
 
+def gemini_speed_rank(slug: str) -> tuple:
+    """Menor tupla = más rápido. 8b, luego flash-lite de versión baja, luego flash."""
+    s = (slug or "").lower()
+    if "8b" in s:
+        family = 0
+    elif "flash-lite" in s or "flashlite" in s:
+        family = 1
+    elif "lite" in s:
+        family = 2
+    elif "flash" in s:
+        family = 3
+    else:
+        family = 9
+    nums = [int(n) for n in re.findall(r"\d+", s)]
+    major = nums[0] if nums else 99
+    minor = nums[1] if len(nums) > 1 else 0
+    return (family, major, minor, len(s), s)
+
+
+def pick_fastest_gemini(slugs: list[str]) -> str | None:
+    """Un solo slug del catálogo. No recorre S y luego M."""
+    usable = [s for s in slugs if (s or "").strip()]
+    if not usable:
+        return None
+    return min(usable, key=gemini_speed_rank)
+
+
 def build_messages(signals: dict[str, Any], allowed: list[str]) -> list[dict[str, str]]:
     last = " ".join(str(signals.get("last_user") or "").split())
-    if len(last) > 1200:
-        last = last[:1200]
-    payload = {
-        "last_user": last,
-        "n_messages": int(signals.get("n_messages") or 0),
-        "approx_chars": int(signals.get("approx_chars") or 0),
-        "has_code": bool(signals.get("has_code")),
-        "has_tools": bool(signals.get("has_tools")),
-        "profiles": list(allowed),
-    }
+    if len(last) > 160:
+        last = last[:160]
+    user = (
+        f"n={int(signals.get('n_messages') or 0)} "
+        f"c={int(signals.get('approx_chars') or 0)} "
+        f"code={1 if signals.get('has_code') else 0} "
+        f"tools={1 if signals.get('has_tools') else 0} "
+        f"ok={','.join(allowed)} u={last}"
+    )
     return [
         {"role": "system", "content": ROUTER_SYSTEM},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
+        {"role": "user", "content": user},
     ]
 
 
