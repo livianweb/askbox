@@ -1,0 +1,128 @@
+# OpenClaw + sanitize-proxy — sidecar opcional.
+# NO forma parte de ../docker-compose.yml. `docker compose up` en la raíz de askbox no lo arranca
+# y no sustituye a api, worker, web, db, redis ni ollama.
+#
+# Red: askbox_default (la crea el compose de askbox; nombre = <proyecto>_default,
+# por defecto askbox si el directorio del repo se llama askbox).
+# LLM: OpenClaw → sanitize-proxy:8080 (masking) → http://api:8000/v1/ask
+#      y, en passthrough, → http://ollama:11434/v1
+#
+# Sin ports publicados. El acceso externo al gateway, si hace falta, va por túnel.
+#
+# Desde la raíz del repo:
+#   cp openclaw/.env.example openclaw/.env
+#   docker compose -f openclaw/docker-compose.yml up -d --build sanitize-proxy
+
+services:
+  sanitize-proxy:
+    build: ./sanitize-proxy
+    image: openclaw-sanitize-proxy:local
+    container_name: openclaw-sanitize
+    restart: unless-stopped
+    environment:
+      ASKBOX_UPSTREAM: http://api:8000
+      OLLAMA_UPSTREAM: http://ollama:11434
+      ASKBOX_TOKEN: ${ASKBOX_TOKEN:-}
+      ASKBOX_MODE: ${ASKBOX_MODE:-allin}
+      UPSTREAM_TIMEOUT: "300"
+      TZ: ${OPENCLAW_TZ:-Europe/Madrid}
+      LEAN_KEEP_MESSAGES: ${LEAN_KEEP_MESSAGES:-4}
+      LEAN_OLLAMA_MODEL: ${LEAN_OLLAMA_MODEL:-qwen2.5-coder:14b}
+      LEAN_SYSTEM: ${LEAN_SYSTEM:-}
+      LEAN_MAX_OUTPUT_TOKENS: ${LEAN_MAX_OUTPUT_TOKENS:-128}
+      LEAN_STRIP_ENVELOPE: ${LEAN_STRIP_ENVELOPE:-1}
+      LEAN_DEBUG: ${LEAN_DEBUG:-0}
+      ROUTE_ENABLED: ${ROUTE_ENABLED:-0}
+      ROUTE_URL: ${ROUTE_URL:-http://api:8000/v1/route}
+      ROUTE_TIMEOUT_MS: ${ROUTE_TIMEOUT_MS:-800}
+      ROUTE_FALLBACK: ${ROUTE_FALLBACK:-lean}
+      ROUTE_FASTPATH_CHARS: ${ROUTE_FASTPATH_CHARS:-200}
+      SPLIT_ENABLED: ${SPLIT_ENABLED:-1}
+      CHAT_CLOUD_MODEL: ${CHAT_CLOUD_MODEL:-cloud-fast}
+      ROUTE_ON_CHAT: ${ROUTE_ON_CHAT:-0}
+    networks: [askbox_default]
+    mem_limit: 192m
+    pids_limit: 64
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  openclaw-gateway:
+    image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    container_name: openclaw-gateway
+    restart: unless-stopped
+    environment:
+      HOME: /home/node
+      OPENCLAW_HOME: /home/node
+      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
+      OPENCLAW_GATEWAY_PORT: "18789"
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:?set OPENCLAW_GATEWAY_TOKEN (openssl rand -hex 32)}
+      OPENCLAW_DISABLE_BONJOUR: "1"
+      OPENCLAW_NO_AUTO_UPDATE: "1"
+      DO_NOT_TRACK: "1"
+      OPENCLAW_NO_RESPAWN: "1"
+      NODE_COMPILE_CACHE: /var/tmp/openclaw-compile-cache
+      TZ: ${OPENCLAW_TZ:-Europe/Madrid}
+      # ASKBOX_TOKEN no se pasa a OpenClaw: lo inyecta sanitize-proxy.
+    volumes:
+      # Estado (openclaw.json). Directorio local, gitignored.
+      - ./data:/home/node/.openclaw
+      - ${OPENCLAW_PROJECTS_HOST:-/var/www/proyectos_web}:/var/www/proyectos_web
+      - ${OPENCLAW_SSH_KEYS_HOST:-/root/.ssh/keys_remote}:/home/node/.ssh/keys_remote:ro
+      - ./ssh/config:/home/node/.ssh/config:ro
+    networks:
+      askbox_default: {}
+      clawbox_edge:
+        ipv4_address: 172.31.250.3
+    mem_limit: ${OPENCLAW_MEM_LIMIT:-2560m}
+    cpus: ${OPENCLAW_CPUS:-2}
+    pids_limit: 512
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      sanitize-proxy:
+        condition: service_healthy
+    command: ["node", "openclaw.mjs", "gateway", "--bind", "lan", "--port", "18789"]
+    healthcheck:
+      test: ["CMD", "node", "dist/docker-healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # Túnel dedicado: docker compose -f openclaw/docker-compose.yml --profile tunnel up -d
+  # Si el hostname de OpenClaw ya entra por el cloudflared de askbox, no hace falta.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: openclaw-cloudflared
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    networks:
+      clawbox_edge:
+        ipv4_address: 172.31.250.2
+    mem_limit: 128m
+    depends_on:
+      openclaw-gateway:
+        condition: service_healthy
+
+networks:
+  askbox_default:
+    external: true
+  # Red privada gateway↔cloudflared. cloudflared no ve api ni ollama.
+  clawbox_edge:
+    name: clawbox_edge
+    internal: false
+    ipam:
+      config:
+        - subnet: 172.31.250.0/29
