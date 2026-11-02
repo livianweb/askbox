@@ -11,14 +11,43 @@ from __future__ import annotations
 import re
 
 _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+# ollama-safe/ antes que ollama/: el segundo es prefijo del primero.
+_PREFIXES = ("ollama-safe/", "ollama/", "askbox/")
+
+
+def _peel_prefixes(raw: str) -> tuple[list[str], str]:
+    text = (raw or "").strip()
+    peeled: list[str] = []
+    while text:
+        low = text.lower()
+        match = next((p for p in _PREFIXES if low.startswith(p)), None)
+        if not match:
+            break
+        peeled.append(match[:-1])
+        text = text[len(match) :].strip()
+    return peeled, text
+
+
+def _looks_like_ollama_model(slug: str) -> bool:
+    """Un tag `nombre:versión` es modelo local. `cloud-fast` es un tier de nube."""
+    return ":" in (slug or "") and valid_ollama_model(slug)
 
 
 def strip_ollama_prefix(raw: str) -> tuple[bool, str]:
-    """Si `raw` empieza por `ollama/`, devuelve el slug sin ese prefijo."""
-    text = (raw or "").strip()
-    if text.lower().startswith("ollama/"):
-        return True, text.split("/", 1)[1].strip()
-    return False, text
+    """Quita `ollama/`, `ollama-safe/` y `askbox/` (sin distinguir mayúsculas).
+
+    El bool es True si eso elige la ruta Ollama: prefijo `ollama/` u
+    `ollama-safe/`, o `askbox/` cuyo resto es un modelo con tag (`qwen:7b`).
+    `askbox/cloud-fast` se limpia en el slug pero no marca la ruta.
+    """
+    peeled, rest = _peel_prefixes(raw)
+    if not peeled:
+        return False, rest
+    if any(name in ("ollama", "ollama-safe") for name in peeled):
+        return True, rest
+    if "askbox" in peeled and _looks_like_ollama_model(rest):
+        return True, rest
+    return False, rest
 
 
 def valid_ollama_model(slug: str) -> bool:
@@ -32,9 +61,10 @@ def valid_ollama_model(slug: str) -> bool:
 def parse_explicit_provider(provider: str | None, model: str | None) -> tuple[str, str] | None:
     """None = cascada actual. ('ollama', slug) = ruta 100 % local.
 
-    Acepta `provider=ollama` (modelo opcional) o `model=ollama/<slug>`
-    (el prefijo implica el proveedor). Sin modelo, o con ``auto``, el slug es
-    ``auto`` (selección local en el router, no un nombre de modelo de Ollama).
+    Acepta `provider=ollama` (modelo opcional) o `model=ollama/<slug>`,
+    `ollama-safe/<slug>` y `askbox/<nombre:tag>` (el prefijo implica Ollama
+    y el slug sale limpio). `askbox/cloud-fast` no es ruta local.
+    Sin modelo, o con ``auto``, el slug es ``auto``.
     Combinaciones inválidas lanzan ValueError. ``allin`` no se acepta aquí.
     """
     prov = (provider or "").strip().lower() or None
@@ -45,7 +75,7 @@ def parse_explicit_provider(provider: str | None, model: str | None) -> tuple[st
     prefixed, slug_from_prefix = strip_ollama_prefix(raw_model or "")
     if prefixed:
         if prov not in (None, "ollama"):
-            raise ValueError('El modelo con prefijo ollama/ no coincide con provider.')
+            raise ValueError("El modelo con prefijo local no coincide con provider.")
         if slug_from_prefix.lower() == "auto":
             return ("ollama", "auto")
         if not valid_ollama_model(slug_from_prefix):
@@ -61,5 +91,7 @@ def parse_explicit_provider(provider: str | None, model: str | None) -> tuple[st
         return ("ollama", slug)
 
     if prov is None:
-        raise ValueError('model solo se admite con provider "ollama" o con prefijo ollama/.')
+        raise ValueError(
+            'model solo se admite con provider "ollama" o con prefijo ollama/, ollama-safe/ o askbox/<modelo:tag>.'
+        )
     raise ValueError('provider explícito no soportado. Usa "ollama", "allin" u omítelo para la cascada.')
