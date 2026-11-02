@@ -335,6 +335,7 @@ async def ask(
     provider: str | None = None,
     model: str | None = None,
     mode: str | None = None,
+    temperature: float | None = None,
 ) -> dict[str, Any]:
     if (mode or "").strip().lower() == "allin" or (provider or "").strip().lower() == "allin":
         from app.llm.allin import run_allin
@@ -370,9 +371,10 @@ async def ask(
     prompt_rendered = "\n".join(f"{m['role']}:{m.get('content') or ''}" for m in messages)
     schema_s = _schema_key(json_schema)
     attachment_digest = attachments.attachments_cache_digest(atts)
-    temperature = (
-        attachments.temperature_for_task(task_used or attachments.TASK_INTERPRET) if atts else 0.4
-    )
+    if atts:
+        temperature = attachments.temperature_for_task(task_used or attachments.TASK_INTERPRET)
+    elif temperature is None:
+        temperature = 0.4
     require_vision = bool(atts)
     requested_auto = tier == "auto"
     steps: list[str] | None
