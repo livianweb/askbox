@@ -390,7 +390,8 @@ async def ask(
             if chosen != slug:
                 log.info("ollama auto: %s inactivo; se usa %s", slug, chosen)
             resolved.append(chosen)
-        steps = resolved or None
+        # Nunca dos llamadas seguidas al mismo slug (p. ej. plan y código → Qwen).
+        steps = ollama_local.dedupe_steps(resolved) or None
     elif explicit:
         # Modelo concreto: el cliente lo pidió, aunque el proyecto lo tenga inactivo.
         steps = [explicit[1]]

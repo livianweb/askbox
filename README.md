@@ -222,7 +222,7 @@ Selección cuando `model` se omite o es `"auto"` (el código es el defecto). **S
 | Depurar, deadlock de Sage X3, algoritmo complejo, paso a paso (sin pedir código) | DeepSeek `deepseek-r1:14b` |
 | Clasificar tickets, resumir logs, categorizar intención, traducción | Llama `llama3.1:8b` |
 | Manual de referencia, varias fuentes técnicas o prompt de unos 8k tokens (~32000 caracteres) | Mistral Nemo `mistral-nemo:12b` |
-| Razonamiento duro **y** código | DeepSeek planifica y Qwen escribe si ambos están activos. Si DeepSeek está inactivo, las dos llamadas usan el principal activo |
+| Razonamiento duro **y** código | DeepSeek planifica y Qwen escribe si ambos están activos y son distintos. Si el remapeo deja un solo slug, una sola llamada |
 | `model` concreto (`qwen2.5-coder:14b`, `ollama/<slug>`, …) | Una sola llamada a ese slug, aunque el proyecto lo tenga inactivo |
 
 `llama3.3:8b` no se usa: en el registro de Ollama Llama 3.3 solo tiene tag de 70B (`llama3.3:70b`); el pull de un 8B de 3.3 falla con «file does not exist». El hueco de texto en 8B lo cubre `llama3.1:8b`, que es el tag que hay que tener en el host.
@@ -298,7 +298,7 @@ Etapas (se saltan si no hacen falta):
 
 **Atajo** — sin adjuntos, sin web y complejidad baja: una sola llamada local (Qwen si es código, Llama si es texto, Mistral Nemo si el prompt ya es largo, DeepSeek en el resto). Sin informe.
 
-Si el modelo local de una etapa está **inactivo** en el proyecto, no se llama: se sustituye por el principal activo (por defecto Qwen). Si no hay ningún local activo, esa etapa no toca Ollama y cae a la cascada. Si una llamada a Ollama falla (timeout, conexión o salida que no cumple `json_schema`), esa etapa también cae a la cascada Gemini/OpenRouter. `models_chain` lista lo que corrió, por ejemplo `allin:ocr`, `allin:web`, `gemini:…`, `ollama:deepseek-r1:14b`, `ollama:qwen2.5-coder:14b`, `ollama:llama3.1:8b`, o los peers de la cascada si hubo fallback. Si el texto final lo escribió un modelo local, `provider` es `allin`; si lo escribió la cascada, `provider` es `gemini` u `openrouter`.
+Si el modelo local de una etapa está **inactivo** en el proyecto, no se llama: se sustituye por el principal activo (por defecto Qwen). Si tras ese remapeo las etapas locales repiten slug —el caso habitual con solo Qwen activo— allin hace **una** llamada a ese modelo con la pregunta (y el OCR o el resumen web, si los hubo). No encadena plan, código e informe contra el mismo 14B. Si la etapa web falla o se omite, tampoco se relanzan varios parciales locales del mismo slug: una respuesta y se devuelve. Con varios slugs distintos se mantiene la cadena, pero un mismo slug no sale dos veces en `models_chain`. Si no hay ningún local activo, esa etapa no toca Ollama y cae a la cascada. Si una llamada a Ollama falla (timeout, conexión o salida que no cumple `json_schema`), esa etapa también cae a la cascada Gemini/OpenRouter. `models_chain` lista lo que corrió, por ejemplo `allin:ocr`, `allin:web`, `gemini:…`, `ollama:deepseek-r1:14b`, `ollama:qwen2.5-coder:14b`, `ollama:llama3.1:8b`, o los peers de la cascada si hubo fallback. Si el texto final lo escribió un modelo local, `provider` es `allin`; si lo escribió la cascada, `provider` es `gemini` u `openrouter`.
 
 ```bash
 # (6) Pipeline híbrido: PDF + web + razonamiento + código + informe Llama.
