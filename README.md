@@ -10,6 +10,8 @@ Licencia [MIT](LICENSE).
 - **Fase 3**: routing `tier=auto`, uso diario, keypool `exhausted`.
 - **Fase 4**: batch (`POST /v1/batch`, `GET /v1/jobs/{id}`), stream SSE (`POST /v1/ask/stream`), alertas de claves, worker arq real.
 
+OpenClaw no forma parte de este compose. El proxy que enmascara y reparte chat/código vive en [`openclaw/sanitize-proxy/`](openclaw/README.md) y se levanta con `openclaw/docker-compose.yml`.
+
 ## Arranque
 
 ```bash

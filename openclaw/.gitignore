@@ -1,0 +1,4 @@
+# Secretos y estado local del sidecar. .env.example sí se versiona (excepción en el .gitignore de la raíz).
+.env
+data/
+ssh/
