@@ -32,6 +32,22 @@ class RouteParseTests(unittest.TestCase):
             parse_explicit_provider(None, "ollama/qwen2.5-coder:14b"),
             ("ollama", "qwen2.5-coder:14b"),
         )
+        self.assertEqual(
+            parse_explicit_provider(None, "askbox/qwen2.5-coder:7b"),
+            ("ollama", "qwen2.5-coder:7b"),
+        )
+        self.assertEqual(
+            parse_explicit_provider("ollama", "OLLAMA-SAFE/qwen2.5-coder:7b"),
+            ("ollama", "qwen2.5-coder:7b"),
+        )
+        self.assertEqual(
+            parse_explicit_provider("ollama", "AskBox/qwen2.5-coder:7b"),
+            ("ollama", "qwen2.5-coder:7b"),
+        )
+
+    def test_askbox_cloud_tier_is_not_ollama(self):
+        with self.assertRaises(ValueError):
+            parse_explicit_provider(None, "askbox/cloud-fast")
 
     def test_provider_and_model(self):
         self.assertEqual(
@@ -68,6 +84,8 @@ class AskPayloadTests(unittest.TestCase):
     def test_prefixed_model(self):
         body = AskIn(prompt="hola", model="ollama/qwen2.5-coder:14b")
         self.assertEqual((body.provider, body.model), ("ollama", "qwen2.5-coder:14b"))
+        routed = AskIn(prompt="hola", provider="ollama", model="askbox/qwen2.5-coder:7b")
+        self.assertEqual((routed.provider, routed.model), ("ollama", "qwen2.5-coder:7b"))
 
     def test_bare_model_422(self):
         with self.assertRaises(ValidationError):
