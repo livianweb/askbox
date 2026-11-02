@@ -32,7 +32,7 @@ def _signals(**over):
 class ProfileContractTests(unittest.TestCase):
     def test_frozen_tuples_match_sanitize_contract(self):
         lean, standard, full = PROFILES["lean"], PROFILES["standard"], PROFILES["full"]
-        self.assertEqual((lean["keep_messages"], lean["system"]), (2, "lean"))
+        self.assertEqual((lean["keep_messages"], lean["system"]), (4, "lean"))
         self.assertGreaterEqual(lean["max_out"], 64)
         self.assertLessEqual(lean["max_out"], 128)
         self.assertEqual(standard["keep_messages"], 4)
@@ -133,7 +133,7 @@ class ChooseProfileTests(unittest.TestCase):
 
         out = asyncio.run(route_mod.choose_profile(_signals(), cloud, 1.0))
         self.assertEqual(out["profile"], "lean")
-        self.assertEqual(out["keep_messages"], 2)
+        self.assertEqual(out["keep_messages"], 4)
 
     def test_cloud_error_and_garbage_stay_standard(self):
         async def boom(_messages):
