@@ -210,6 +210,42 @@ class HeuristicTests(unittest.TestCase):
             shape="reason", has_extracted=False, has_web=False, has_plan=True, has_code_stage=False,
         ))
 
+    def test_collapse_repeated_slug_to_one_answer(self):
+        from app.llm.allin import collapse_resolved_stages
+
+        qwen = "qwen2.5-coder:14b"
+        deepseek = "deepseek-r1:14b"
+        llama = "llama3.1:8b"
+        self.assertEqual(
+            collapse_resolved_stages([("plan", qwen), ("code", qwen), ("report", qwen)]),
+            [("answer", qwen)],
+        )
+        self.assertEqual(
+            collapse_resolved_stages([("plan", deepseek), ("code", qwen), ("report", llama)]),
+            [("plan", deepseek), ("code", qwen), ("report", llama)],
+        )
+        self.assertEqual(
+            collapse_resolved_stages([("plan", deepseek), ("code", qwen), ("report", qwen)]),
+            [("plan", deepseek), ("answer", qwen)],
+        )
+        self.assertEqual(
+            collapse_resolved_stages([("plan", qwen), ("code", qwen), ("report", llama)]),
+            [("code", qwen), ("report", llama)],
+        )
+        self.assertEqual(
+            collapse_resolved_stages([("read", qwen), ("report", qwen)]),
+            [("answer", qwen)],
+        )
+        self.assertEqual(collapse_resolved_stages([("plan", None), ("code", None)]), [])
+        self.assertEqual(
+            ollama_local.dedupe_steps([qwen, qwen]),
+            [qwen],
+        )
+        self.assertEqual(
+            ollama_local.dedupe_steps([deepseek, qwen]),
+            [deepseek, qwen],
+        )
+
     def test_allin_simple_shape_skips_chain(self):
         self.assertEqual(
             allin_shape("Di hola", has_attachments=False, web_needed=False, doc_and_web=False),
@@ -1013,7 +1049,8 @@ class LocalActivePolicyTests(unittest.IsolatedAsyncioTestCase):
             patch("app.llm.router._cascade", cascade),
         ):
             for prompt in cases:
-                await ask(
+                before = len(complete.calls)
+                res = await ask(
                     None,
                     None,
                     project=project,
@@ -1023,6 +1060,8 @@ class LocalActivePolicyTests(unittest.IsolatedAsyncioTestCase):
                     provider="ollama",
                     model="auto",
                 )
+                self.assertEqual(len(complete.calls) - before, 1)
+                self.assertEqual(res["models_chain"], [f"ollama:{settings.allin_code_model}"])
         cascade.assert_not_called()
         self.assertTrue(complete.calls)
         self.assertTrue(all(model == settings.allin_code_model for model, _ in complete.calls))
@@ -1042,6 +1081,237 @@ class LocalActivePolicyTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual([c[0] for c in complete.calls], [settings.ollama_reason_model])
         self.assertEqual(res["provider"], "ollama")
+
+    async def test_single_active_qwen_is_one_ollama_call(self):
+        """Plan + código + informe, con solo Qwen activo, es una completion."""
+        complete = _RecordingComplete(result="sql único")
+        cascade = AsyncMock(side_effect=AssertionError("la respuesta local basta"))
+        web = AsyncMock(side_effect=AssertionError("este prompt no pide web"))
+        prompt = "Hay un deadlock y un bug complejo. Escribe el código SQL que lo corrige."
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.allin.web_summary", web),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(ollama_models={}),
+                messages=[{"role": "user", "content": prompt}],
+                tier="fast",
+                max_tokens=128,
+                mode="allin",
+            )
+        web.assert_not_called()
+        cascade.assert_not_called()
+        self.assertEqual(len(complete.calls), 1)
+        self.assertEqual(complete.calls[0][0], settings.allin_code_model)
+        self.assertIn(prompt, complete.calls[0][1][-1]["content"])
+        self.assertNotIn("Plan de diseño:", complete.calls[0][1][-1]["content"])
+        self.assertEqual(res["provider"], "allin")
+        self.assertEqual(res["text"], "sql único")
+        self.assertEqual(res["models_chain"], [f"ollama:{settings.allin_code_model}"])
+        self.assertEqual(
+            [item for item in res["models_chain"] if item.startswith("ollama:")],
+            [f"ollama:{settings.allin_code_model}"],
+        )
+
+    async def test_single_active_qwen_web_failure_does_not_chain_locals(self):
+        complete = _RecordingComplete(result="sin parciales")
+        cascade = AsyncMock(side_effect=AssertionError("no relances la cascada si Qwen respondió"))
+        web = AsyncMock(side_effect=LLMError("quota", kind="quota"))
+        prompt = (
+            "Busca en Google la documentación reciente de los deadlocks "
+            "y escribe el código SQL que evita el interbloqueo."
+        )
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.allin.web_summary", web),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(ollama_models={}),
+                messages=[{"role": "user", "content": prompt}],
+                tier="balanced",
+                max_tokens=200,
+                mode="allin",
+            )
+        web.assert_awaited()
+        cascade.assert_not_called()
+        self.assertEqual(len(complete.calls), 1)
+        self.assertEqual(complete.calls[0][0], settings.allin_code_model)
+        self.assertNotIn("allin:web", res["models_chain"])
+        self.assertEqual(res["models_chain"], [f"ollama:{settings.allin_code_model}"])
+        self.assertEqual(res["provider"], "allin")
+        self.assertEqual(res["text"], "sin parciales")
+
+    async def test_single_active_qwen_keeps_web_summary_in_one_call(self):
+        complete = _RecordingComplete(result="con web")
+        cascade = AsyncMock(side_effect=AssertionError("Qwen responde"))
+        web = AsyncMock(return_value={
+            "text": "PostgreSQL 16 documenta lock_timeout",
+            "models_chain": ["gemini:peer"],
+            "attempts": 1,
+            "input_tokens": 3,
+            "output_tokens": 4,
+            "estimated_cost_usd": 0.0,
+            "key_id": None,
+            "key_source": "system",
+        })
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.allin.web_summary", web),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(ollama_models={}),
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Busca en Google la documentación reciente de los deadlocks "
+                        "y escribe el código SQL que evita el interbloqueo."
+                    ),
+                }],
+                tier="balanced",
+                max_tokens=200,
+                mode="allin",
+            )
+        cascade.assert_not_called()
+        self.assertEqual(len(complete.calls), 1)
+        self.assertIn("lock_timeout", complete.calls[0][1][-1]["content"])
+        self.assertEqual(
+            [item for item in res["models_chain"] if item.startswith("ollama:")],
+            [f"ollama:{settings.allin_code_model}"],
+        )
+        self.assertEqual(res["models_chain"][0], "allin:web")
+        self.assertIn("gemini:peer", res["models_chain"])
+        self.assertEqual(res["provider"], "allin")
+
+    async def test_single_active_qwen_local_failure_is_one_cloud_fallback(self):
+        complete = _RecordingComplete(error=LLMError("timeout", kind="retry"))
+        cascade = AsyncMock(return_value={
+            "text": "desde la nube",
+            "provider": "gemini",
+            "model_used": "gemini-test",
+            "models_chain": ["gemini:gemini-test"],
+            "attempts": 1,
+            "input_tokens": 2,
+            "output_tokens": 3,
+            "estimated_cost_usd": 0.01,
+            "key_id": None,
+            "key_source": "system",
+            "cache_hit": False,
+            "tier_used": "fast",
+        })
+        web = AsyncMock(side_effect=LLMError("quota", kind="quota"))
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.allin.web_summary", web),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(ollama_models={}),
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Busca en Google la documentación reciente de los deadlocks "
+                        "y escribe el código SQL que evita el interbloqueo."
+                    ),
+                }],
+                tier="fast",
+                max_tokens=64,
+                mode="allin",
+            )
+        self.assertEqual(len(complete.calls), 1)
+        self.assertEqual(cascade.await_count, 1)
+        self.assertEqual(res["text"], "desde la nube")
+        self.assertEqual(res["provider"], "gemini")
+        self.assertEqual(
+            [item for item in res["models_chain"] if item.startswith("ollama:")],
+            [f"ollama:{settings.allin_code_model}"],
+        )
+
+    async def test_distinct_locals_skip_duplicate_report_slug(self):
+        complete = _RecordingComplete()
+        cascade = AsyncMock(side_effect=AssertionError("los dos locales responden"))
+        prefs = {
+            "primary": settings.allin_code_model,
+            "enabled": {
+                settings.allin_code_model: True,
+                settings.ollama_model: True,
+                settings.ollama_reason_model: True,
+                settings.allin_reason_model: True,
+                settings.ollama_nlp_model: False,
+                settings.allin_nlp_model: False,
+                settings.ollama_longctx_model: False,
+                settings.allin_longctx_model: False,
+            },
+        }
+        project = _project(ollama_models=prefs)
+        from app.llm.local_models import resolve_local_model
+
+        reason = resolve_local_model(settings.allin_reason_model, project)
+        code = resolve_local_model(settings.allin_code_model, project)
+        nlp = resolve_local_model(settings.allin_nlp_model, project)
+        if reason == code:
+            self.skipTest("razón y código son el mismo slug en este entorno")
+        self.assertEqual(nlp, code)
+        prompt = "Hay un deadlock y un bug complejo. Escribe el código SQL que lo corrige."
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=project,
+                messages=[{"role": "user", "content": prompt}],
+                tier="fast",
+                max_tokens=128,
+                mode="allin",
+            )
+        cascade.assert_not_called()
+        self.assertEqual([c[0] for c in complete.calls], [reason, code])
+        self.assertIn("Plan de diseño:", complete.calls[1][1][-1]["content"])
+        self.assertEqual(
+            res["models_chain"],
+            [f"ollama:{reason}", f"ollama:{code}"],
+        )
+        self.assertEqual(res["models_chain"].count(f"ollama:{code}"), 1)
+
+    async def test_single_active_qwen_ocr_is_one_local_call(self):
+        complete = _RecordingComplete(result="factura")
+        extract = AsyncMock(return_value="[a.png p1]\nFACTURA 10")
+        att = NormalizedAttachment(mime="image/png", data=b"png", sha256="abc", size=3, filename="a.png")
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.allin.extract_documents", extract),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(ollama_models={}),
+                messages=[{"role": "user", "content": "qué pone en el documento"}],
+                tier="fast",
+                max_tokens=64,
+                mode="allin",
+                normalized_attachments=[att],
+            )
+        self.assertEqual(len(complete.calls), 1)
+        self.assertEqual(complete.calls[0][0], settings.allin_code_model)
+        self.assertIn("FACTURA 10", complete.calls[0][1][-1]["content"])
+        self.assertEqual(res["models_chain"][0], "allin:ocr")
+        self.assertEqual(
+            [item for item in res["models_chain"] if item.startswith("ollama:")],
+            [f"ollama:{settings.allin_code_model}"],
+        )
+        self.assertEqual(res["provider"], "allin")
 
 
 class ExtractAndWebTests(unittest.IsolatedAsyncioTestCase):

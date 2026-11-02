@@ -19,6 +19,19 @@ class LocalFailure(Exception):
         self.kind = kind
 
 
+def dedupe_steps(steps: list[str]) -> list[str]:
+    """Un slug por petición. Conserva el orden de la primera aparición.
+
+    Razón y código que resuelven al mismo modelo no se llaman dos veces.
+    """
+    out: list[str] = []
+    for raw in steps:
+        slug = (raw or "").strip()
+        if slug and slug not in out:
+            out.append(slug)
+    return out
+
+
 def planned_models(prompt: str) -> list[str]:
     """Modelo o par de modelos cuando el cliente no fija uno (o pide ``auto``)."""
     kind = ollama_auto_kind(prompt)
@@ -41,7 +54,8 @@ async def execute(
     temperature: float,
     json_schema: dict | None,
 ) -> dict:
-    """Una o dos llamadas a Ollama. ``steps`` ya está resuelto (no manda ``auto``)."""
+    """Una llamada por slug. ``steps`` ya está resuelto (no manda ``auto``)."""
+    steps = dedupe_steps(list(steps))
     if not steps:
         raise LocalFailure("No hay modelo Ollama que ejecutar.", attempts=0, kind="fatal")
     attempts = 0

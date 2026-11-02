@@ -9,7 +9,11 @@ Etapas que se saltan si no hacen falta:
 5. Informe local (Llama) si las etapas anteriores dejaron trabajo intermedio
    sustantivo. El atajo de una sola llamada no informa.
    Si el slug de la etapa está inactivo en el proyecto, se usa el local
-   principal activo. Si no hay ninguno activo, esa etapa no llama a Ollama.
+   principal activo. Si tras ese remapeo las etapas locales repiten slug,
+   no se encadenan: una completion por slug (una sola si todas caen en el
+   mismo, con el OCR o el resumen web en el contexto). Si la web falla o
+   se omite, tampoco se relanzan varios parciales del mismo modelo.
+   Si no hay ninguno activo, esa etapa no llama a Ollama.
    Atajo: sin adjuntos, sin web y complejidad baja, una sola llamada
    (Qwen si es código, Llama si es texto, Mistral si el prompt ya es largo,
    DeepSeek en el resto).
@@ -184,6 +188,43 @@ def _context_appendix(*parts: str) -> str:
     return "\n\n".join(p for p in parts if p and p.strip())
 
 
+def collapse_resolved_stages(stages: list[tuple[str, str | None]]) -> list[tuple[str, str]]:
+    """Una entrada ``(purpose, slug)`` por slug, en orden de primera aparición.
+
+    Los slug vacíos se descartan. Un slug que solo planifica o lee, y al que
+    sigue otro modelo, conserva ese propósito. Si también escribe código y
+    aún queda un modelo distinto, la llamada única es ``code``. Un slug que
+    solo informa sigue en ``report``. El resto (responde, o es el último)
+    es ``answer``: no se repite el mismo modelo para plan, código e informe.
+    """
+    order: list[str] = []
+    purposes: dict[str, list[str]] = {}
+    for purpose, slug in stages:
+        text = (slug or "").strip()
+        if not text:
+            continue
+        if text not in purposes:
+            order.append(text)
+            purposes[text] = []
+        if purpose not in purposes[text]:
+            purposes[text].append(purpose)
+    collapsed: list[tuple[str, str]] = []
+    for index, slug in enumerate(order):
+        owned = purposes[slug]
+        has_later = index < len(order) - 1
+        only_context = bool(owned) and set(owned) <= {"plan", "read"}
+        if has_later and only_context:
+            purpose = "read" if "read" in owned else "plan"
+        elif set(owned) == {"report"}:
+            purpose = "report"
+        elif "code" in owned and has_later:
+            purpose = "code"
+        else:
+            purpose = "answer"
+        collapsed.append((purpose, slug))
+    return collapsed
+
+
 async def run_allin(
     pool,
     redis,
@@ -342,14 +383,21 @@ async def run_allin(
             "model_used": res.get("model_used") or "",
         }
 
+    attempted_local: set[str] = set()
+    answered_local: dict[str, dict] = {}
+
     async def local_stage(model: str, *, purpose: str, appendix: str, final: bool) -> dict | None:
         nonlocal attempts, in_tok, out_tok
         chosen = resolve_local_model(model, project)
         if not chosen:
             log.info("allin: sin modelo local activo (pedido %s); se omite Ollama", model)
             return None
+        if chosen in attempted_local:
+            log.info("allin: %s ya se usó en esta petición; no se repite", chosen)
+            return answered_local.get(chosen)
         if chosen != model:
             log.info("allin: %s inactivo; se usa %s", model, chosen)
+        attempted_local.add(chosen)
         payload = stage_messages(messages, purpose=purpose, appendix=appendix)
         attempts += 1
         chain.append(f"ollama:{chosen}")
@@ -371,7 +419,9 @@ async def run_allin(
             log.warning("allin: %s no cumple el contrato de salida; fallback de cascada", chosen)
             return None
         used = out.get("model") if isinstance(out.get("model"), str) else chosen
-        return {"text": text, "full": raw or text, "model_used": (used or chosen).strip(), "provider": "allin"}
+        result = {"text": text, "full": raw or text, "model_used": (used or chosen).strip(), "provider": "allin"}
+        answered_local[chosen] = result
+        return result
 
     async def finish_local_or_cloud(*, model: str, purpose: str, appendix: str) -> dict:
         local = await local_stage(model, purpose=purpose, appendix=appendix, final=True)
@@ -380,9 +430,93 @@ async def run_allin(
         cloud = await cloud_stage(purpose=purpose, appendix=appendix, final=True)
         return _absorb_cloud(cloud or {})
 
+    naive: list[tuple[str, str]] = []
+    if stages["shape"] == "simple":
+        naive = [("answer", stages["single"])]
+    else:
+        if stages["context"]:
+            naive.append(("read" if stages["context"] == "longctx" else "plan", stages["context"]))
+        if stages["code"]:
+            naive.append(("code", "code"))
+        if not naive:
+            naive.append(("answer", "reason"))
+        # El informe se cuenta aquí para detectar el mismo slug antes de llamarlo.
+        # La ejecución clásica sigue decidiendo el informe con el plan ya escrito.
+        if json_schema is None and allin_needs_report(
+            shape=stages["shape"],
+            has_extracted=bool(extracted.strip()),
+            has_web=bool(web.strip()),
+            has_plan=bool(stages["code"] and stages["context"]),
+            has_code_stage=bool(stages["code"] and stages["context"]),
+        ):
+            naive.append(("report", "nlp"))
+    resolved = [(purpose, resolve_local_model(local_models[role], project)) for purpose, role in naive]
+    slugs = [slug for _, slug in resolved if slug]
+    repeated = len(slugs) != len(set(slugs))
+
+    async def _run_collapsed(pairs: list[tuple[str, str | None]]) -> dict:
+        collapsed = collapse_resolved_stages(pairs)
+        if not collapsed:
+            cloud_only = await cloud_stage(purpose="answer", appendix=base_ctx, final=True)
+            return _absorb_cloud(cloud_only or {})
+        plan_text = ""
+        title = "Plan de diseño"
+        closed_local: dict | None = None
+        for idx, (purpose, slug) in enumerate(collapsed):
+            last = idx == len(collapsed) - 1
+            if purpose == "read":
+                title = "Lectura del contexto"
+            parts = [base_ctx]
+            if purpose in ("code", "answer", "report") and plan_text:
+                parts.append(f"{title}:\n{_clip(plan_text, _PLAN_LIMIT)}")
+            if purpose == "report" and closed_local and closed_local.get("text"):
+                parts.append(f"Resultado de la tarea:\n{_clip(closed_local['text'], _DOC_LIMIT)}")
+            appendix = _context_appendix(*parts)
+            final = purpose not in ("plan", "read")
+            local = await local_stage(slug, purpose=purpose, appendix=appendix, final=final)
+            if local is None:
+                if purpose in ("plan", "read") and not last:
+                    cloud_plan = await cloud_stage(purpose=purpose, appendix=appendix, final=False)
+                    if cloud_plan:
+                        absorbed = _absorb_cloud(cloud_plan)
+                        plan_text = absorbed["text"]
+                    continue
+                if purpose == "report" and closed_local is not None:
+                    try:
+                        cloud_report = await cloud_stage(purpose=purpose, appendix=appendix, final=True)
+                    except AskFailure:
+                        log.warning("allin: el informe no pudo generarse; se conserva el resultado previo")
+                    else:
+                        if cloud_report:
+                            closed_local = _absorb_cloud(cloud_report)
+                    continue
+                cloud_final = await cloud_stage(purpose=purpose, appendix=appendix, final=True)
+                absorbed = _absorb_cloud(cloud_final or {})
+                if purpose in ("plan", "read"):
+                    plan_text = absorbed["text"]
+                closed_local = absorbed
+                continue
+            if purpose in ("plan", "read"):
+                plan_text = local["full"]
+                if last:
+                    closed_local = local
+            else:
+                closed_local = local
+        if closed_local is None:
+            raise AskFailure(
+                "allin no produjo respuesta",
+                tier_used=effective_tier,
+                attempts=attempts,
+                code="provider_failed",
+            )
+        return closed_local
+
     plan = ""
     note_title = "Plan de diseño"
-    if stages["shape"] == "simple":
+    if repeated:
+        log.info("allin: etapas locales repetían %s; una llamada por slug", ">".join(slugs))
+        closed = await _run_collapsed(resolved)
+    elif stages["shape"] == "simple":
         closed = await finish_local_or_cloud(
             model=local_models[stages["single"]],
             purpose="answer",
@@ -425,8 +559,9 @@ async def run_allin(
             )
 
     # El plan de un razonamiento suelto es la propia respuesta: no lo dupliques en el informe.
+    # Si ya colapsamos slugs repetidos, el informe iba dentro de esa única llamada.
     plan_for_report = plan if stages["code"] else ""
-    if json_schema is None and allin_needs_report(
+    if not repeated and json_schema is None and allin_needs_report(
         shape=stages["shape"],
         has_extracted=bool(extracted.strip()),
         has_web=bool(web.strip()),
