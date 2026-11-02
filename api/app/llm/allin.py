@@ -8,6 +8,8 @@ Etapas que se saltan si no hacen falta:
 4. Código local (Qwen) si hace falta código.
 5. Informe local (Llama) si las etapas anteriores dejaron trabajo intermedio
    sustantivo. El atajo de una sola llamada no informa.
+   Si el slug de la etapa está inactivo en el proyecto, se usa el local
+   principal activo. Si no hay ninguno activo, esa etapa no llama a Ollama.
    Atajo: sin adjuntos, sin web y complejidad baja, una sola llamada
    (Qwen si es código, Llama si es texto, Mistral si el prompt ya es largo,
    DeepSeek en el resto).
@@ -33,6 +35,7 @@ from app.llm.heuristics import (
     stage_messages,
     visible_answer,
 )
+from app.llm.local_models import policy_fingerprint, resolve_local_model
 from app.llm.providers import gemini, ollama, openrouter
 from app.llm.schema_check import response_matches_schema
 from app.ocr import engine as ocr_engine
@@ -224,7 +227,7 @@ async def run_allin(
         max_tokens,
         schema_s,
         digest,
-        "allin",
+        "allin:" + policy_fingerprint(project),
     )
     ttl = int(project.get("cache_ttl_seconds") or 0)
     if ttl > 0:
@@ -341,28 +344,34 @@ async def run_allin(
 
     async def local_stage(model: str, *, purpose: str, appendix: str, final: bool) -> dict | None:
         nonlocal attempts, in_tok, out_tok
+        chosen = resolve_local_model(model, project)
+        if not chosen:
+            log.info("allin: sin modelo local activo (pedido %s); se omite Ollama", model)
+            return None
+        if chosen != model:
+            log.info("allin: %s inactivo; se usa %s", model, chosen)
         payload = stage_messages(messages, purpose=purpose, appendix=appendix)
         attempts += 1
-        chain.append(f"ollama:{model}")
+        chain.append(f"ollama:{chosen}")
         try:
             out = await ollama.complete(
                 payload,
-                model=model,
+                model=chosen,
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
         except LLMError as exc:
-            log.warning("allin: %s falló (%s); fallback de cascada", model, exc.kind)
+            log.warning("allin: %s falló (%s); fallback de cascada", chosen, exc.kind)
             return None
         raw = (out.get("text") or "").strip()
         text = visible_answer(raw)
         in_tok += int(out.get("input_tokens") or 0)
         out_tok += int(out.get("output_tokens") or 0)
         if final and not response_matches_schema(text, json_schema):
-            log.warning("allin: %s no cumple el contrato de salida; fallback de cascada", model)
+            log.warning("allin: %s no cumple el contrato de salida; fallback de cascada", chosen)
             return None
-        used = out.get("model") if isinstance(out.get("model"), str) else model
-        return {"text": text, "full": raw or text, "model_used": (used or model).strip(), "provider": "allin"}
+        used = out.get("model") if isinstance(out.get("model"), str) else chosen
+        return {"text": text, "full": raw or text, "model_used": (used or chosen).strip(), "provider": "allin"}
 
     async def finish_local_or_cloud(*, model: str, purpose: str, appendix: str) -> dict:
         local = await local_stage(model, purpose=purpose, appendix=appendix, final=True)

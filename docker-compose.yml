@@ -20,6 +20,8 @@ services:
       ALLIN_NLP_MODEL: ${ALLIN_NLP_MODEL:-llama3.1:8b}
       ALLIN_LONGCTX_MODEL: ${ALLIN_LONGCTX_MODEL:-mistral-nemo:12b}
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
+      # Vacío = solo el modelo de código activo. Lista o "*" para cambiar el default.
+      OLLAMA_DEFAULT_ACTIVE_MODELS: ${OLLAMA_DEFAULT_ACTIVE_MODELS:-}
       ASKBOX_COOKIE_SECURE: ${ASKBOX_COOKIE_SECURE:-false}
       ASKBOX_ALLOW_REGISTER: ${ASKBOX_ALLOW_REGISTER:-false}
       ASKBOX_ASK_RATE_PER_MIN: ${ASKBOX_ASK_RATE_PER_MIN:-30}
@@ -110,6 +112,7 @@ services:
       ALLIN_NLP_MODEL: ${ALLIN_NLP_MODEL:-llama3.1:8b}
       ALLIN_LONGCTX_MODEL: ${ALLIN_LONGCTX_MODEL:-mistral-nemo:12b}
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
+      OLLAMA_DEFAULT_ACTIVE_MODELS: ${OLLAMA_DEFAULT_ACTIVE_MODELS:-}
       ASKBOX_REPO_PATH: /repo
       # Auto-update diario (git pull --ff-only + compose rebuild en este directorio).
       ASKBOX_AUTO_UPDATE: ${ASKBOX_AUTO_UPDATE:-true}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 
 import asyncpg
@@ -8,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.crypto import CryptoError, encrypt_secret, master_key_ready
 from app.deps import current_user, err
+from app.llm.local_models import LocalPolicyError, apply_update, public_view
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
 PROVIDERS = {"gemini", "openrouter"}
@@ -24,6 +26,16 @@ class KeyIn(BaseModel):
     provider: str = Field(pattern="^(gemini|openrouter)$")
     label: str = Field(default="", max_length=80)
     key: str = Field(min_length=8, max_length=512)
+
+
+class OllamaModelIn(BaseModel):
+    slug: str = Field(min_length=1, max_length=128)
+    enabled: bool
+
+
+class OllamaModelsIn(BaseModel):
+    primary: str | None = Field(default=None, max_length=128)
+    models: list[OllamaModelIn] = Field(default_factory=list)
 
 
 def _project_out(r) -> dict:
@@ -75,6 +87,40 @@ async def create_project(body: ProjectIn, request: Request, user: dict = Depends
     except asyncpg.UniqueViolationError:
         raise err(409, "project_exists", "Ya existe un proyecto con ese nombre.") from None
     return _project_out(row)
+
+
+@router.get("/{project_id}/ollama-models")
+async def get_ollama_models(project_id: str, request: Request, user: dict = Depends(current_user)):
+    """Modelos locales activos para el enrutado automático de este proyecto."""
+    project = await get_project(request.app.state.pool, user["id"], project_id)
+    return public_view(project)
+
+
+@router.put("/{project_id}/ollama-models")
+async def put_ollama_models(
+    project_id: str,
+    body: OllamaModelsIn,
+    request: Request,
+    user: dict = Depends(current_user),
+):
+    """Activa o desactiva slots locales. No borra modelos de Ollama."""
+    pool = request.app.state.pool
+    project = await get_project(pool, user["id"], project_id)
+    try:
+        stored = apply_update(
+            project,
+            [item.model_dump() for item in body.models],
+            body.primary,
+            primary_set="primary" in body.model_fields_set,
+        )
+    except LocalPolicyError as exc:
+        raise err(422, exc.code, str(exc)) from None
+    row = await pool.fetchrow(
+        "UPDATE projects SET ollama_models = $1::jsonb WHERE id = $2 RETURNING *",
+        json.dumps(stored),
+        project["id"],
+    )
+    return public_view(row)
 
 
 @router.get("/{project_id}/keys")

@@ -56,6 +56,7 @@ En Docker, el contenedor `api` no lee `.env` del repo (está enmascarado). Para 
 | GET | `/v1/auth/me` | Usuario actual |
 | POST | `/v1/auth/token` | Bearer largo para scripts (se muestra una vez) |
 | GET/POST | `/v1/projects` | Listar / crear proyecto |
+| GET/PUT | `/v1/projects/{id}/ollama-models` | Modelos Ollama activos para el enrutado automático (sesión). GET devuelve `primary` y `models[]` (`slug`, `roles`, `label`, `enabled`, `primary`). PUT: `{primary?, models:[{slug, enabled}]}`. No borra modelos de Ollama |
 | GET/POST | `/v1/projects/{id}/keys` | Listar (solo `last4`, `status`, `label`, `provider`) / alta de clave (se cifra) |
 | DELETE | `/v1/projects/{id}/keys/{key_id}` | Borrar clave |
 | POST | `/v1/tts` | Texto a voz con Piper local (sin LLM): `{text, lang: es\|en, style: plain\|snake}` → `audio/wav`. Auth: `Bearer $ASKBOX_TTS_SERVICE_KEY` (backends), `Bearer ab_live_…` con scope `tts:synth` o cookie |
@@ -192,7 +193,7 @@ Sin clave de proveedor, `/v1/ask` responde `502 no_provider_key` y deja la traza
 
 ### Ollama local (`provider=ollama`) — sin internet
 
-Ruta explícita y **100 % local**: la petición va solo a Ollama. **No** llama a Gemini, a OpenRouter ni a búsqueda web, no usa el keypool y **no** entra en la cascada. Si Ollama no responde o el texto no cumple `json_schema`, la respuesta es `502 provider_failed` (sin fallback a la nube). Si omites `provider` y no mandas `model` con prefijo `ollama/`, y tampoco pides `mode=allin` ni `provider=allin`, el comportamiento de la cascada no cambia. Ollama no está en la cascada automática.
+Ruta explícita y local: la petición va a Ollama. **No** llama a Gemini, a OpenRouter ni a búsqueda web, no usa el keypool y un fallo de Ollama **no** entra en la cascada (`502 provider_failed`). Excepción: si `model` se omite o es `auto` y el proyecto no tiene ningún modelo local activo, la petición sigue por la cascada de nube (igual que `mode=allin` sin locales). Si omites `provider` y no mandas `model` con prefijo `ollama/`, y tampoco pides `mode=allin` ni `provider=allin`, el comportamiento de la cascada no cambia. Ollama no está en la cascada automática.
 
 El servicio `ollama` está en `docker-compose.yml` (`ollama/ollama:latest`, `container_name: ollama`, volumen `ollama_data` → `/root/.ollama`). El puerto publicado es solo `127.0.0.1:11434`. En la red Compose la API lo llama por DNS `http://ollama:11434` (`OLLAMA_BASE_URL`, compatible OpenAI en `/v1/chat/completions`). No hace falta clave.
 
@@ -210,18 +211,19 @@ El servicio `ollama` está en `docker-compose.yml` (`ollama/ollama:latest`, `con
 | `OLLAMA_TIMEOUT` | `120` | Segundos de espera de esa llamada (el 14B local suele pasar de `ASKBOX_PROVIDER_TIMEOUT`) |
 | `OLLAMA_KEEP_ALIVE` | `30m` | El contenedor `ollama` (cuánto deja el modelo cargado) |
 | `OLLAMA_NUM_PARALLEL` | `1` | Peticiones paralelas dentro de Ollama |
-| `OLLAMA_MAX_LOADED_MODELS` | `1` | Modelos cargados a la vez |
+| `OLLAMA_MAX_LOADED_MODELS` | `1` | Modelos cargados a la vez (no cambia al activar o desactivar rutas) |
+| `OLLAMA_DEFAULT_ACTIVE_MODELS` | vacío (solo el de código) | Default de proyectos sin preferencia guardada. `"*"` activa los cuatro slots; una lista separada por comas fija esos slugs |
 
-Selección cuando `model` se omite o es `"auto"` (sigue siendo local; el código es el defecto):
+Selección cuando `model` se omite o es `"auto"` (el código es el defecto). **Solo entra un slot si el proyecto lo tiene activo.** Con el default (solo `qwen2.5-coder:14b` activo) las cuatro rutas locales y las etapas de `mode=allin` que apuntaban a DeepSeek, Llama o Mistral Nemo usan Qwen. Si no queda ningún local activo, `mode=allin` y el auto de `provider=ollama` siguen por la cascada Gemini/OpenRouter. Un `model` concreto (`provider=ollama` + slug) no mira el interruptor: llama a ese modelo.
 
-| Señal | Modelo |
+| Señal | Modelo si el slot está activo |
 |---|---|
 | Escribir, refactorizar, SQL, PHP, PrestaShop, Dockerfile | Qwen `qwen2.5-coder:14b` |
 | Depurar, deadlock de Sage X3, algoritmo complejo, paso a paso (sin pedir código) | DeepSeek `deepseek-r1:14b` |
 | Clasificar tickets, resumir logs, categorizar intención, traducción | Llama `llama3.1:8b` |
 | Manual de referencia, varias fuentes técnicas o prompt de unos 8k tokens (~32000 caracteres) | Mistral Nemo `mistral-nemo:12b` |
-| Razonamiento duro **y** código | DeepSeek planifica y Qwen escribe. Sigue siendo local (`models_chain` lista los dos) |
-| `model` concreto (`qwen2.5-coder:14b`, `ollama/<slug>`, …) | Una sola llamada a ese slug, sin selección |
+| Razonamiento duro **y** código | DeepSeek planifica y Qwen escribe si ambos están activos. Si DeepSeek está inactivo, las dos llamadas usan el principal activo |
+| `model` concreto (`qwen2.5-coder:14b`, `ollama/<slug>`, …) | Una sola llamada a ese slug, aunque el proyecto lo tenga inactivo |
 
 `llama3.3:8b` no se usa: en el registro de Ollama Llama 3.3 solo tiene tag de 70B (`llama3.3:70b`); el pull de un 8B de 3.3 falla con «file does not exist». El hueco de texto en 8B lo cubre `llama3.1:8b`, que es el tag que hay que tener en el host.
 
@@ -236,30 +238,51 @@ docker exec ollama ollama pull llama3.1:8b
 docker exec ollama ollama pull mistral-nemo:12b
 ```
 
+Activar o desactivar (sesión de usuario; también en `/projects`, sección «Modelos locales»):
+
+```bash
+# Estado efectivo. Sin fila guardada: solo qwen2.5-coder:14b activo.
+curl -b cj -s $A/v1/projects/$PID/ollama-models
+
+# Volver a usar DeepSeek en la ruta de razonamiento y dejarlo como no principal.
+curl -b cj -s $J -X PUT -d '{
+  "primary": "qwen2.5-coder:14b",
+  "models": [
+    {"slug": "qwen2.5-coder:14b", "enabled": true},
+    {"slug": "deepseek-r1:14b", "enabled": true},
+    {"slug": "llama3.1:8b", "enabled": false},
+    {"slug": "mistral-nemo:12b", "enabled": false}
+  ]
+}' $A/v1/projects/$PID/ollama-models
+```
+
+Los slugs son los de `OLLAMA_*` / `ALLIN_*` de este servidor. Si cambias esas variables, la lista del GET cambia con ellas.
+
 ```bash
 # (1) Código (defecto) → Qwen. No toca Gemini ni OpenRouter.
 curl -s $J -H "Authorization: Bearer $TOK" \
   -d '{"prompt":"Refactoriza este módulo PHP y el Dockerfile del worker","provider":"ollama"}' $A/v1/ask
 
-# (2) Razonamiento duro → DeepSeek. Sigue siendo solo local.
+# (2) Razonamiento duro. Con el default (DeepSeek inactivo) responde Qwen, en local.
+# Activa deepseek-r1:14b en el proyecto para que esta ruta use DeepSeek.
 curl -s $J -H "Authorization: Bearer $TOK" \
   -d '{"prompt":"Depura paso a paso el deadlock de Sage X3 entre dos transacciones","provider":"ollama"}' $A/v1/ask
 
-# (3) Texto / NLP → Llama 3.1 8B.
+# (3) Texto / NLP. Con Llama inactivo cae en el principal activo (Qwen).
 curl -s $J -H "Authorization: Bearer $TOK" \
   -d '{"prompt":"Clasifica este ticket y categoriza la intención del cliente: no puede pagar el pedido","provider":"ollama"}' $A/v1/ask
 
-# (4) Contexto largo → Mistral Nemo. El cuerpo tiene que ser un manual o varias fuentes
-# (o superar ~8k tokens). Un prompt de una línea no entra en esta ruta.
+# (4) Contexto largo. Con Mistral Nemo inactivo cae en Qwen. El cuerpo tiene que ser un manual
+# o varias fuentes (o superar ~8k tokens) para elegir esa ruta antes del filtro de activos.
 curl -s $J -H "Authorization: Bearer $TOK" \
   -d '{"prompt":"Lee el manual de referencia y estas fuentes técnicas.\n\n<PEGAR_MANUAL>","provider":"ollama"}' $A/v1/ask
 
-# (5) Modelo forzado: una sola llamada, aunque el prompt sea complejo.
+# (5) Modelo forzado: una sola llamada a ese slug, aunque esté inactivo en el proyecto.
 curl -s $J -H "Authorization: Bearer $TOK" \
   -d '{"prompt":"Di hola en una frase","provider":"ollama","model":"qwen2.5-coder:14b"}' $A/v1/ask
 ```
 
-`tier` se guarda en la traza y no elige el modelo. Adjuntos con `provider=ollama`: `422 ollama_no_attachments`. No hay OCR en esa ruta: la extracción multimodal es de `mode=allin`. La respuesta trae `provider: "ollama"`; en `requests.key_source` queda `local`. Coste estimado `0`.
+`tier` se guarda en la traza y no elige el modelo. Adjuntos con `provider=ollama`: `422 ollama_no_attachments`. No hay OCR en esa ruta: la extracción multimodal es de `mode=allin`. Si hubo llamada local, la respuesta trae `provider: "ollama"` y `requests.key_source` queda `local` (coste estimado `0`). Si el auto local no tenía ningún modelo activo, la respuesta es la de la cascada (`gemini` u `openrouter`). Un fallo de Ollama con algún modelo activo sigue en `502 provider_failed`, sin nube.
 
 ### Orquestador híbrido (`mode=allin`, alias `provider=allin`)
 
@@ -275,7 +298,7 @@ Etapas (se saltan si no hacen falta):
 
 **Atajo** — sin adjuntos, sin web y complejidad baja: una sola llamada local (Qwen si es código, Llama si es texto, Mistral Nemo si el prompt ya es largo, DeepSeek en el resto). Sin informe.
 
-Si una llamada a Ollama falla (timeout, conexión o salida que no cumple `json_schema`), esa etapa cae a la cascada Gemini/OpenRouter. `models_chain` lista lo que corrió, por ejemplo `allin:ocr`, `allin:web`, `gemini:…`, `ollama:deepseek-r1:14b`, `ollama:qwen2.5-coder:14b`, `ollama:llama3.1:8b`, o los peers de la cascada si hubo fallback. Si el texto final lo escribió un modelo local, `provider` es `allin`; si lo escribió la cascada, `provider` es `gemini` u `openrouter`.
+Si el modelo local de una etapa está **inactivo** en el proyecto, no se llama: se sustituye por el principal activo (por defecto Qwen). Si no hay ningún local activo, esa etapa no toca Ollama y cae a la cascada. Si una llamada a Ollama falla (timeout, conexión o salida que no cumple `json_schema`), esa etapa también cae a la cascada Gemini/OpenRouter. `models_chain` lista lo que corrió, por ejemplo `allin:ocr`, `allin:web`, `gemini:…`, `ollama:deepseek-r1:14b`, `ollama:qwen2.5-coder:14b`, `ollama:llama3.1:8b`, o los peers de la cascada si hubo fallback. Si el texto final lo escribió un modelo local, `provider` es `allin`; si lo escribió la cascada, `provider` es `gemini` u `openrouter`.
 
 ```bash
 # (6) Pipeline híbrido: PDF + web + razonamiento + código + informe Llama.
@@ -318,7 +341,7 @@ Variables que lee la API (`api/app/config.py` → `api/app/mailer.py`): `ASKBOX_
 
 ## Diseño (resumen)
 
-- `api/app/llm/`: `router.py` (caché → tier → peers same-class en todos los proveedores con clave → bajada de tier; `provider=ollama` 100 % local sin cascada; `mode=allin` delega en `allin.py`), `providers/` (gemini, openrouter, ollama), `ollama_local.py`, `heuristics.py` (código, razonamiento, NLP, contexto largo), `keypool.py`, `cache.py`, `catalog.py` (`peer_chain`).
+- `api/app/llm/`: `router.py` (caché → tier → peers same-class en todos los proveedores con clave → bajada de tier; `provider=ollama` local, sin cascada si Ollama falla; auto sin ningún local activo sigue la cascada), `providers/` (gemini, openrouter, ollama), `ollama_local.py`, `local_models.py` (activos por proyecto), `allin.py`, `heuristics.py` (código, razonamiento, NLP, contexto largo), `keypool.py`, `cache.py`, `catalog.py` (`peer_chain`).
 - Modelos y cadenas en la tabla `model_catalog` (seeds/migraciones en `api/app/migrations/`); ajustar `enabled`, `priority`, `tier` y costes en BD (o nueva migración), no en código.
 - Seguridad: AES-256-GCM con AAD `proyecto:proveedor`, nonce aleatorio, `key_version`; la API nunca devuelve claves; logs sin prompts (solo longitud y hash truncado).
 - Límites: prompt ≤ 20000 chars, `max_output_tokens` ≤ 8192, rate limit Redis (`ASKBOX_ASK_RATE_PER_MIN`, 30/min por usuario, token `ab_live_` y proyecto en `/v1/ask`; login 10/min por IP).

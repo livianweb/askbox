@@ -2,8 +2,10 @@
 
 Política provider-agnostic: para el tier pedido, peers de misma clase de potencia (S|M|L)
 entre todos los proveedores con clave; solo bajar de clase/tier cuando se agotan.
-Si el cliente pide provider=ollama (o model=ollama/<slug>), la ruta es 100 % local
-(`ollama_local`) y un fallo no consulta esta cascada.
+Si el cliente pide provider=ollama (o model=ollama/<slug>), la ruta es local
+(`ollama_local`) y un fallo de Ollama no consulta esta cascada. Si el enrutado
+automático (modelo omitido o ``auto``) no tiene ningún modelo local activo en
+el proyecto, la petición sigue por la cascada de nube.
 `mode=allin` o `provider=allin` delega en `allin.py` (híbrido, con fallback).
 Sin esos parámetros el camino de cascada no cambia.
 Todas las llamadas externas viven bajo app/llm/.
@@ -20,6 +22,7 @@ from app.llm import attachments, cache, catalog, keypool, ollama_local
 from app.llm.attachments import NormalizedAttachment
 from app.llm.errors import LLMError
 from app.llm.heuristics import prompt_text
+from app.llm.local_models import resolve_local_model
 from app.llm.ollama_route import parse_explicit_provider
 from app.llm.providers import gemini, openrouter
 from app.llm.schema_check import response_matches_schema
@@ -372,7 +375,29 @@ async def ask(
     )
     require_vision = bool(atts)
     requested_auto = tier == "auto"
+    steps: list[str] | None
+    if explicit and explicit[1] == "auto":
+        # Cuatro rutas locales. Un slug inactivo cae al principal activo.
+        # Si no queda ninguno, se deja la cascada (mismo cierre que allin).
+        resolved: list[str] = []
+        for slug in ollama_local.planned_models(prompt_text(messages)):
+            chosen = resolve_local_model(slug, project)
+            if not chosen:
+                log.info("ollama auto: sin modelo local activo (pedido %s); cascada", slug)
+                explicit = None
+                resolved = []
+                break
+            if chosen != slug:
+                log.info("ollama auto: %s inactivo; se usa %s", slug, chosen)
+            resolved.append(chosen)
+        steps = resolved or None
+    elif explicit:
+        # Modelo concreto: el cliente lo pidió, aunque el proyecto lo tenga inactivo.
+        steps = [explicit[1]]
+    else:
+        steps = None
     # Con Ollama explícito no se infiere ni se escala el tier: no elige modelo.
+    # Si el auto local no tenía ningún modelo activo, `explicit` ya es None.
     effective_tier = tier if explicit else (
         infer_tier_from_text(
             prompt_rendered,
@@ -383,12 +408,6 @@ async def ask(
         if requested_auto
         else tier
     )
-    if explicit and explicit[1] == "auto":
-        steps = ollama_local.planned_models(prompt_text(messages))
-    elif explicit:
-        steps = [explicit[1]]
-    else:
-        steps = None
     route = "ollama:" + ">".join(steps) if steps else ""
 
     ckey = cache.cache_key(
