@@ -9,6 +9,11 @@ services:
       ASKBOX_MASTER_KEY: ${ASKBOX_MASTER_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # POST /v1/route: secreto opcional (no ab_live_) y presupuesto de la nube.
+      ASKBOX_TOKEN: ${ASKBOX_TOKEN:-}
+      ASKBOX_ROUTE_PROJECT_ID: ${ASKBOX_ROUTE_PROJECT_ID:-}
+      ASKBOX_ROUTE_TIMEOUT_MS: ${ASKBOX_ROUTE_TIMEOUT_MS:-500}
+      ASKBOX_ROUTE_RATE_PER_MIN: ${ASKBOX_ROUTE_RATE_PER_MIN:-120}
       # Ollama local (provider=ollama, 100 % local) y modelos locales de mode=allin.
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:14b}

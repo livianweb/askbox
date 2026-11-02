@@ -69,6 +69,7 @@ En Docker, el contenedor `api` no lee `.env` del repo (está enmascarado). Para 
 | DELETE | `/v1/projects/{id}/prompts/{name}` | Borrar todas las versiones |
 | POST | `/v1/ask` | Sesión o `Authorization: Bearer ab_live_…` (scope `ask:read`). Cuerpo: `prompt` **o** `prompt_template` + `variables`, `system?`, `project_id?` (ignorado con token de proyecto), `tier`, `max_output_tokens`, `attachments?`, `task?`, `provider?` (`ollama` local o `allin`), `model?`, `mode?` (`allin`) |
 | POST | `/v1/ask/stream` | Igual auth/cuerpo que `/v1/ask` (incluidos `mode=allin` y `provider=ollama` / `provider=allin`); respuesta **SSE** (`text/event-stream`): eventos `delta` con `text` y `done` con metadatos (`request_id`, tokens, etc.) |
+| POST | `/v1/route` | Controlador de contexto para el 7B local. Auth: `Bearer $ASKBOX_TOKEN` (`ab_live_…` con `ask:read`, o el secreto de servicio del mismo nombre). Devuelve un perfil fijo (`lean` / `standard` / `full`). Ver abajo |
 | POST | `/v1/ocr` | Sesión o `Authorization: Bearer ab_live_…` (scope `ask:read`). OCR de **una página** de PDF o imagen (Tesseract + poppler). Cuerpo: `{data_base64, mime, page?=1, lang?="spa", psm?=4, words?=false}`. Ver «OCR» abajo |
 | POST | `/v1/batch` | Solo sesión. `{project_id?, tier, max_output_tokens, items:[{prompt, system?}]}` → `{job_id, status, total}`; encola worker arq |
 | GET | `/v1/jobs/{job_id}` | Estado del batch e ítems (`text` / `error_code` por prompt) |
@@ -103,6 +104,43 @@ Archivos **inline** en el JSON (no se guardan en servidor). La respuesta puede i
 `status`, `remote`, `push` y `github-token` aceptan `?repo=<nombre>`: `askbox` (por defecto) o un repo montado en `ASKBOX_EXTRA_REPOS` (por defecto `cursor-agent-orchestrator`).
 
 **Pantalla `/settings/git` en Docker:** `docker-compose.yml` monta el repo en el contenedor `api` como `/repo` (`ASKBOX_REPO_PATH=/repo`): árbol en solo lectura, `.git` y `.askbox/` en lectura/escritura, y `.env` enmascarado con `/dev/null` (los secretos no son legibles desde el contenedor). La API corre con `ASKBOX_UID`/`ASKBOX_GID` (por defecto 1000:1000, el dueño del repo) para no dejar ficheros root en `.git`. El **worker** monta el repo (sin leer `.env`) y `docker.sock` para el **auto-update diario** (ver abajo). Sin `gh auth login` en el host/contenedor no se puede crear remoto con `gh`; conectar uno existente (`POST /v1/settings/git/remote`) sí funciona.
+
+### Perfil local: `POST /v1/route`
+
+sanitize (clawBox) llama aquí antes de Ollama (`qwen2.5-coder:7b`, `MAX_LOADED=1`). askBox **no** recorta el hilo: solo elige un perfil fijo para que el prefijo del 7B se reutilice. sanitize aplica `keep_messages`, `system` y `max_out`. Las preguntas triviales las filtra sanitize y no llegan a este endpoint.
+
+La decisión la toma el tier `fast` ya existente (Gemini / OpenRouter, claves del proyecto o `GEMINI_API_KEY` / `OPENROUTER_API_KEY`). No hay proveedor nuevo.
+
+| Perfil | `keep_messages` | `system` | `max_out` |
+|---|---|---|---|
+| `lean` | 2 | `lean` (system corto de sanitize, ~152 caracteres) | 96 (dentro de 64–128) |
+| `standard` | 4 | `summary` | 128 |
+| `full` | 12 (dentro de 8–12) | `full` | 256 |
+
+Si la nube supera el presupuesto, no hay clave o el JSON no vale, la respuesta sigue siendo **HTTP 200** con el perfil más corto de `profiles` (lean si está en la lista) y `reason` = `timeout` | `cloud_unavailable` | `invalid_profile` | `rate_limited`. sanitize también corta a ~700 ms y usa lean.
+
+Variables (default entre paréntesis):
+
+- `ASKBOX_TOKEN` — secreto de servicio opcional. Si el Bearer **no** empieza por `ab_live_`, se compara con esta variable. Un `ab_live_…` (scope `ask:read`) se valida como en `/v1/ask` y no hace falta duplicarlo en el entorno.
+- `ASKBOX_ROUTE_PROJECT_ID` — uuid del proyecto cuyas claves usa el secreto de servicio. Si falta, se elige el proyecto con `allow_system_keys` o con una clave activa.
+- `ASKBOX_ROUTE_TIMEOUT_MS` (500, tope 650) — presupuesto de la llamada a nube, por debajo del timeout de sanitize.
+- `ASKBOX_ROUTE_RATE_PER_MIN` (120, `0` = sin límite).
+
+```bash
+curl -s -H "Authorization: Bearer $ASKBOX_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"last_user":"arregla el test de login","n_messages":9,"approx_chars":4200,"has_code":true,"has_tools":false,"profiles":["lean","standard","full"]}' \
+  http://localhost:8066/v1/route
+```
+
+```json
+{"profile":"full","keep_messages":12,"system":"full","max_out":256,"reason":"code task"}
+```
+
+Timeout o nube caída:
+
+```json
+{"profile":"lean","keep_messages":2,"system":"lean","max_out":96,"reason":"timeout"}
+```
 
 ### OCR: `POST /v1/ocr`
 
