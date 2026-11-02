@@ -4,7 +4,7 @@ sanitize (clawBox) aplica la decisión. Timeout, nube caída o rate limit
 devuelven standard (keep=4). Lean solo si la nube lo elige.
 
 Tuplas congeladas (dentro del contrato):
-  lean     keep=2  system=lean     max_out=96   (rango 64–128)
+  lean     keep=4  system=lean     max_out=96   (rango 64–128)
   standard keep=4  system=summary  max_out=128
   full     keep=12 system=full     max_out=256  (keep dentro de 8–12)
 """
@@ -20,7 +20,7 @@ PROFILE_IDS = ("lean", "standard", "full")
 
 # Una tupla por id: el prefijo del 7B no cambia dentro del mismo perfil.
 PROFILES: dict[str, dict[str, Any]] = {
-    "lean": {"keep_messages": 2, "system": "lean", "max_out": 96},
+    "lean": {"keep_messages": 4, "system": "lean", "max_out": 96},
     "standard": {"keep_messages": 4, "system": "summary", "max_out": 128},
     "full": {"keep_messages": 12, "system": "full", "max_out": 256},
 }

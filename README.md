@@ -115,7 +115,7 @@ La primera llamada en frío puede tardar unos 15–20 s. El presupuesto por defe
 
 | Perfil | `keep_messages` | `system` | `max_out` |
 |---|---|---|---|
-| `lean` | 2 | `lean` (system corto de sanitize, ~152 caracteres) | 96 (dentro de 64–128) |
+| `lean` | 4 | `lean` (system corto de sanitize, ~152 caracteres) | 96 (dentro de 64–128) |
 | `standard` | 4 | `summary` | 128 |
 | `full` | 12 (dentro de 8–12) | `full` | 256 |
 
