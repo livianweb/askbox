@@ -66,15 +66,15 @@ def pack(profile: str, reason: str) -> dict[str, Any]:
 
 
 def gemini_speed_rank(slug: str) -> tuple:
-    """Menor tupla = más rápido. 8b, luego flash-lite de versión baja, luego flash."""
+    """Menor tupla = se prueba antes. flash-lite, luego flash, luego 8b."""
     s = (slug or "").lower()
-    if "8b" in s:
+    if "flash-lite" in s or "flashlite" in s:
         family = 0
-    elif "flash-lite" in s or "flashlite" in s:
-        family = 1
-    elif "lite" in s:
+    elif "8b" in s:
         family = 2
     elif "flash" in s:
+        family = 1
+    elif "lite" in s:
         family = 3
     else:
         family = 9
@@ -84,12 +84,22 @@ def gemini_speed_rank(slug: str) -> tuple:
     return (family, major, minor, len(s), s)
 
 
+def order_route_models(slugs: list[str]) -> list[str]:
+    """Orden de prueba. Los 404 se descartan fuera, no aquí."""
+    usable: list[str] = []
+    seen: set[str] = set()
+    for raw in slugs:
+        slug = (raw or "").strip()
+        if not slug or slug in seen:
+            continue
+        seen.add(slug)
+        usable.append(slug)
+    return sorted(usable, key=gemini_speed_rank)
+
+
 def pick_fastest_gemini(slugs: list[str]) -> str | None:
-    """Un solo slug del catálogo. No recorre S y luego M."""
-    usable = [s for s in slugs if (s or "").strip()]
-    if not usable:
-        return None
-    return min(usable, key=gemini_speed_rank)
+    ordered = order_route_models(slugs)
+    return ordered[0] if ordered else None
 
 
 def build_messages(signals: dict[str, Any], allowed: list[str]) -> list[dict[str, str]]:

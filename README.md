@@ -109,7 +109,7 @@ Archivos **inline** en el JSON (no se guardan en servidor). La respuesta puede i
 
 sanitize (clawBox) llama aquí antes de Ollama (`qwen2.5-coder:7b`, `MAX_LOADED=1`). askBox **no** recorta el hilo: solo elige un perfil fijo para que el prefijo del 7B se reutilice. sanitize aplica `keep_messages`, `system` y `max_out`. Las preguntas triviales las filtra sanitize y no llegan a este endpoint.
 
-Una sola llamada al Gemini **más rápido** habilitado en el catálogo: slug con `8b` si existe, si no el `flash-lite` de versión más baja (no el de mayor `priority`, que puede ser un Flash lento). `max_tokens` 32, thinking apagado, conexión HTTP reutilizada. OpenRouter no se llama. Clave: la del proyecto o `GEMINI_API_KEY` si `allow_system_keys`. `/v1/ask` no cambia.
+Prueba el `flash-lite` de versión más baja del catálogo (luego `flash`, luego `8b`). Un HTTP 404 se anota en el log (`route gemini 404 model=…`) y se pasa al siguiente id; no se vuelve a llamar. La migración `016` añade `gemini-2.0-flash-lite`, `gemini-2.0-flash` y `gemini-1.5-flash-8b`, y apaga los slugs de la semilla que esta API responde 404 (`gemini-2.5-flash-lite` y los `gemini-3.*`). `max_tokens` 32, thinking apagado, conexión reutilizada. OpenRouter no se llama.
 
 | Perfil | `keep_messages` | `system` | `max_out` |
 |---|---|---|---|
@@ -117,7 +117,7 @@ Una sola llamada al Gemini **más rápido** habilitado en el catálogo: slug con
 | `standard` | 4 | `summary` | 128 |
 | `full` | 12 (dentro de 8–12) | `full` | 256 |
 
-Si la nube supera el presupuesto, no hay clave Gemini o el JSON no vale, la respuesta sigue siendo **HTTP 200** con **standard** (`keep_messages=4`) cuando `standard` está en `profiles`. `reason` = `timeout` | `cloud_unavailable` | `invalid_profile` | `rate_limited`. Lean solo si el modelo lo elige (o si es el único perfil permitido). sanitize corta a ~800 ms; por debajo de eso este endpoint ya ha respondido.
+Si la nube supera el presupuesto o no hay ningún Gemini con 200, la respuesta sigue siendo **HTTP 200** con `profile=standard`, `keep_messages=4` y `system=lean` (`reason` = `timeout` o `cloud_unavailable`). Un `standard` elegido por el modelo sigue con `system=summary`. Lean como perfil solo si el modelo lo elige.
 
 Variables (default entre paréntesis):
 
@@ -139,7 +139,7 @@ curl -s -H "Authorization: Bearer $ASKBOX_TOKEN" -H 'Content-Type: application/j
 Timeout o nube caída:
 
 ```json
-{"profile":"standard","keep_messages":4,"system":"summary","max_out":128,"reason":"timeout"}
+{"profile":"standard","keep_messages":4,"system":"lean","max_out":128,"reason":"timeout"}
 ```
 
 ### OCR: `POST /v1/ocr`

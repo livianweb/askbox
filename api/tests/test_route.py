@@ -10,7 +10,8 @@ from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.llm.local_route import PROFILES, fallback_id, pack, parse_choice, pick_fastest_gemini  # noqa: E402
+from app.llm.errors import LLMError  # noqa: E402
+from app.llm.local_route import PROFILES, fallback_id, order_route_models, pack, parse_choice  # noqa: E402
 from app.routers import route as route_mod  # noqa: E402
 
 
@@ -57,24 +58,24 @@ class ProfileContractTests(unittest.TestCase):
         self.assertIsNone(parse_choice('{"profile":"huge"}', allowed))
         self.assertIsNone(parse_choice('{"profile":"full"}', ["lean", "standard"]))
 
-    def test_pick_fastest_gemini_prefers_8b_then_old_lite(self):
-        # Slugs de prueba; en producción salen de model_catalog, no de una constante.
+    def test_order_is_lite_then_flash_then_8b(self):
         self.assertEqual(
-            pick_fastest_gemini(
+            order_route_models(
                 [
-                    "gemini-3.5-flash",
-                    "gemini-3.5-flash-lite",
+                    "gemini-1.5-flash-8b",
                     "gemini-2.5-flash-lite",
-                    "gemini-2.5-pro",
+                    "gemini-2.0-flash",
+                    "gemini-2.0-flash-lite",
                 ]
             ),
-            "gemini-2.5-flash-lite",
+            [
+                "gemini-2.0-flash-lite",
+                "gemini-2.5-flash-lite",
+                "gemini-2.0-flash",
+                "gemini-1.5-flash-8b",
+            ],
         )
-        self.assertEqual(
-            pick_fastest_gemini(["gemini-2.5-flash-lite", "gemini-1.5-flash-8b"]),
-            "gemini-1.5-flash-8b",
-        )
-        self.assertIsNone(pick_fastest_gemini([]))
+        self.assertEqual(order_route_models([]), [])
 
     def test_pack_collapses_reason(self):
         out = pack("lean", "  timeout \n now ")
@@ -109,8 +110,10 @@ class ChooseProfileTests(unittest.TestCase):
             return '{"profile":"full","reason":"too late"}'
 
         out = asyncio.run(route_mod.choose_profile(_signals(), cloud, 0.05))
-        self.assertEqual(out, pack("standard", "timeout"))
+        self.assertEqual(out["profile"], "standard")
+        self.assertEqual(out["reason"], "timeout")
         self.assertEqual(out["keep_messages"], 4)
+        self.assertEqual(out["system"], "lean")
 
     def test_explicit_lean_still_wins(self):
         async def cloud(_messages):
@@ -128,6 +131,7 @@ class ChooseProfileTests(unittest.TestCase):
         self.assertEqual(err["profile"], "standard")
         self.assertEqual(err["reason"], "cloud_unavailable")
         self.assertEqual(err["keep_messages"], 4)
+        self.assertEqual(err["system"], "lean")
 
         async def garbage(_messages):
             return "no idea"
@@ -165,7 +169,7 @@ class RouteHttpTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200, res.text)
         self.assertEqual(res.json()["profile"], "standard")
         self.assertEqual(res.json()["reason"], "cloud_unavailable")
-        self.assertEqual(res.json()["system"], "summary")
+        self.assertEqual(res.json()["system"], "lean")
         self.assertEqual(res.json()["keep_messages"], 4)
 
     def test_missing_bearer_is_401(self):
@@ -235,6 +239,7 @@ class RouteHttpTests(unittest.TestCase):
             seen["messages"] = messages
             return {"text": '{"profile":"full","reason":"ok"}', "model": kwargs["model"]}
 
+        route_mod._MISSING.clear()
         project = {
             "id": "00000000-0000-0000-0000-000000000099",
             "default_tier": "fast",
@@ -249,11 +254,54 @@ class RouteHttpTests(unittest.TestCase):
                 route_mod.cloud_text(Pool(), None, project, [{"role": "user", "content": "x"}])
             )
         route_mod._HOT.pop(str(project["id"]), None)
+        route_mod._MISSING.clear()
         self.assertIn("full", text)
         self.assertEqual(seen["kwargs"]["model"], "gemini-2.5-flash-lite")
         self.assertEqual(seen["kwargs"]["max_tokens"], 32)
         self.assertTrue(seen["kwargs"]["fast"])
         self.assertEqual(seen["kwargs"]["temperature"], 0.0)
+
+    def test_404_skips_to_next_slug(self):
+        route_mod._MISSING.clear()
+        project = {
+            "id": "00000000-0000-0000-0000-000000000088",
+            "default_tier": "fast",
+            "cache_ttl_seconds": 0,
+            "allow_system_keys": True,
+        }
+        route_mod._HOT.pop(str(project["id"]), None)
+        calls: list[str] = []
+
+        class Pool:
+            async def fetch(self, *_args):
+                return [
+                    {"slug": "gemini-2.5-flash-lite"},
+                    {"slug": "gemini-2.0-flash"},
+                ]
+
+        async def fake_keys(_pool, _project, provider):
+            self.assertEqual(provider, "gemini")
+            from app.llm.keypool import KeyHandle
+
+            return [KeyHandle("gemini", "not-a-real-key", None, "system")]
+
+        async def fake_complete(_messages, **kwargs):
+            calls.append(kwargs["model"])
+            if kwargs["model"].endswith("2.5-flash-lite"):
+                raise LLMError("not found", status=404, kind="retry")
+            return {"text": '{"profile":"standard","reason":"ok"}', "model": kwargs["model"]}
+
+        with mock.patch.object(route_mod.keypool, "candidates", fake_keys), mock.patch.object(
+            route_mod.gemini, "complete", fake_complete
+        ), self.assertLogs("askbox.route", level="INFO") as logs:
+            text = asyncio.run(
+                route_mod.cloud_text(Pool(), None, project, [{"role": "user", "content": "x"}])
+            )
+        route_mod._HOT.pop(str(project["id"]), None)
+        route_mod._MISSING.clear()
+        self.assertIn("standard", text)
+        self.assertEqual(calls, ["gemini-2.5-flash-lite", "gemini-2.0-flash"])
+        self.assertIn("route gemini 404 model=gemini-2.5-flash-lite", "\n".join(logs.output))
 
     def test_timeout_log_names_model(self):
         async def slow(_messages):
@@ -289,7 +337,7 @@ class RouteHttpTests(unittest.TestCase):
         self.assertEqual(res.json()["profile"], "standard")
         self.assertEqual(res.json()["reason"], "timeout")
         self.assertEqual(res.json()["keep_messages"], 4)
-        self.assertEqual(res.json()["system"], "summary")
+        self.assertEqual(res.json()["system"], "lean")
 
 
 if __name__ == "__main__":

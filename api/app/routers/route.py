@@ -33,7 +33,7 @@ Ejemplo:
 
 Timeout:
 
-    {"profile":"standard","keep_messages":4,"system":"summary","max_out":128,"reason":"timeout"}
+    {"profile":"standard","keep_messages":4,"system":"lean","max_out":128,"reason":"timeout"}
 """
 from __future__ import annotations
 
@@ -52,15 +52,16 @@ from app import ratelimit
 from app.config import settings
 from app.deps import _bearer_token, ask_auth, err
 from app.llm import keypool
+from app.llm.errors import LLMError
 from app.llm.local_route import (
     PROFILE_IDS,
     ROUTE_MAX_TOKENS,
     build_messages,
     fallback_id,
     is_fallback_reason,
+    order_route_models,
     pack,
     parse_choice,
-    pick_fastest_gemini,
 )
 from app.llm.providers import gemini
 from app.project_auth import has_scope
@@ -75,6 +76,9 @@ _TIMEOUT_FLOOR_MS = 50.0
 # slug + clave de Gemini, para no repetir catálogo y keypool en cada turno.
 _HOT: dict[str, tuple[float, str, str]] = {}
 _HOT_TTL_S = 30.0
+# generateContent 404: el id no existe para esta clave. No se reintenta.
+_MISSING: set[str] = set()
+_MAX_MODEL_TRIES = 4
 
 
 class RouteIn(BaseModel):
@@ -224,45 +228,99 @@ async def load_project(pool, caller: dict[str, Any]):
     )
 
 
-async def _gemini_ready(pool, project) -> tuple[str, str]:
-    """Slug más rápido + clave. Cache corta en proceso (no loguea la clave)."""
-    pid = str(project["id"])
-    now = time.monotonic()
-    hit = _HOT.get(pid)
-    if hit and hit[0] > now:
-        return hit[1], hit[2]
-    rows, keys = await asyncio.gather(
-        pool.fetch("SELECT slug FROM model_catalog WHERE enabled AND provider = 'gemini'"),
-        keypool.candidates(pool, project, "gemini"),
-    )
-    slug = pick_fastest_gemini([r["slug"] for r in rows])
-    if not slug or not keys:
-        log.info("route sin gemini util slug=%s keys=%s", slug or "-", len(keys))
+def _missing_model(exc: LLMError) -> bool:
+    if exc.status == 404:
+        return True
+    text = str(exc).lower()
+    return "not found" in text or "not supported" in text
+
+
+def _fallback_decision(profile: str, reason: str) -> dict[str, Any]:
+    """Timeout o nube caída: keep=4 (standard) pero system=lean, como sanitize."""
+    out = pack(profile, reason)
+    if reason in {"timeout", "cloud_unavailable"} and out["profile"] == "standard":
+        out["system"] = "lean"
+    return out
+
+
+async def _gemini_secret(pool, project) -> str:
+    keys = await keypool.candidates(pool, project, "gemini")
+    if not keys:
+        log.info("route sin clave gemini")
         raise RuntimeError("no_gemini")
-    secret = keys[0].secret
-    _HOT[pid] = (now + _HOT_TTL_S, slug, secret)
-    if len(_HOT) > 32:
-        _HOT.clear()
-        _HOT[pid] = (now + _HOT_TTL_S, slug, secret)
-    return slug, secret
+    return keys[0].secret
+
+
+async def _candidate_slugs(pool) -> list[str]:
+    rows = await pool.fetch(
+        "SELECT slug FROM model_catalog WHERE enabled AND provider = 'gemini'"
+    )
+    return [slug for slug in order_route_models([r["slug"] for r in rows]) if slug not in _MISSING]
 
 
 async def cloud_text(pool, redis, project, messages: list[dict], attempt: dict | None = None) -> str:
-    """Una llamada al Gemini más rápido. Sin cascada ni OpenRouter."""
-    del redis  # el hot path no espera a Redis
-    slug, secret = await _gemini_ready(pool, project)
-    if attempt is not None:
-        attempt["model"] = slug
-    res = await gemini.complete(
-        messages,
-        api_key=secret,
-        model=slug,
-        max_tokens=ROUTE_MAX_TOKENS,
-        temperature=0.0,
-        fast=True,
-        timeout=2.5,
-    )
-    return str(res.get("text") or "")
+    """Prueba el flash-lite más bajo del catálogo. Un 404 se salta y no se cachea."""
+    del redis
+    pid = str(project["id"])
+    now = time.monotonic()
+    secret: str | None = None
+    hit = _HOT.get(pid)
+    if hit and hit[0] > now and hit[1] not in _MISSING:
+        secret = hit[2]
+        slug = hit[1]
+        if attempt is not None:
+            attempt["model"] = slug
+        try:
+            res = await gemini.complete(
+                messages,
+                api_key=secret,
+                model=slug,
+                max_tokens=ROUTE_MAX_TOKENS,
+                temperature=0.0,
+                fast=True,
+                timeout=2.5,
+            )
+            return str(res.get("text") or "")
+        except LLMError as exc:
+            if not _missing_model(exc):
+                raise
+            _MISSING.add(slug)
+            _HOT.pop(pid, None)
+            log.info("route gemini 404 model=%s", slug)
+
+    if secret is None:
+        secret = await _gemini_secret(pool, project)
+    tried = 0
+    for slug in await _candidate_slugs(pool):
+        if tried >= _MAX_MODEL_TRIES:
+            break
+        tried += 1
+        if attempt is not None:
+            attempt["model"] = slug
+        try:
+            res = await gemini.complete(
+                messages,
+                api_key=secret,
+                model=slug,
+                max_tokens=ROUTE_MAX_TOKENS,
+                temperature=0.0,
+                fast=True,
+                timeout=2.5,
+            )
+        except LLMError as exc:
+            if not _missing_model(exc):
+                raise
+            _MISSING.add(slug)
+            log.info("route gemini 404 model=%s", slug)
+            continue
+        _HOT[pid] = (now + _HOT_TTL_S, slug, secret)
+        if len(_HOT) > 32:
+            fresh = _HOT[pid]
+            _HOT.clear()
+            _HOT[pid] = fresh
+        return str(res.get("text") or "")
+    log.info("route sin modelo gemini con 200")
+    raise RuntimeError("no_gemini")
 
 
 async def choose_profile(
@@ -285,12 +343,12 @@ async def choose_profile(
         elapsed = int((time.monotonic() - started) * 1000)
         model = (attempt or {}).get("model") or "-"
         log.info("route timeout model=%s latency_ms=%s", model, elapsed)
-        return pack(safe, "timeout")
+        return _fallback_decision(safe, "timeout")
     except Exception as exc:  # noqa: BLE001
         elapsed = int((time.monotonic() - started) * 1000)
         model = (attempt or {}).get("model") or "-"
         log.info("route nube no disponible: %s model=%s latency_ms=%s", type(exc).__name__, model, elapsed)
-        return pack(safe, "cloud_unavailable")
+        return _fallback_decision(safe, "cloud_unavailable")
     parsed = parse_choice(text, allowed)
     if not parsed:
         return pack(safe, "invalid_profile")
@@ -315,9 +373,9 @@ def _bucket(caller: dict[str, Any]) -> str:
         "o con el secreto `ASKBOX_TOKEN`. "
         "Cuerpo: last_user, n_messages, approx_chars, has_code, has_tools, profiles. "
         "Respuesta: profile (lean|standard|full) y la tupla fija keep_messages, system, max_out, reason. "
-        "Una llamada al Gemini más rápido del catálogo (8b o flash-lite), max 32 tokens, sin thinking. "
-        "Timeout, nube caída o límite de ritmo: HTTP 200 con standard (keep=4) si está en profiles. "
-        "Lean solo si la nube lo elige."
+        "Prueba flash-lite (versión baja), luego flash, luego 8b. Un 404 se registra y se salta. "
+        "Timeout o nube caída: HTTP 200 standard con keep=4 y system=lean. "
+        "Lean de perfil solo si la nube lo elige."
     ),
 )
 async def route_turn(body: RouteIn, request: Request):
