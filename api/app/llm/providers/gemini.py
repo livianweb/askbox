@@ -43,10 +43,11 @@ def _attachment_parts(atts: list[NormalizedAttachment]) -> list[dict]:
 
 
 def _thinking_off(model: str) -> dict:
-    """Apaga el razonamiento interno. 3.x usa nivel; el resto, presupuesto 0."""
-    nums = [int(n) for n in _VER.findall(model or "")]
+    """Alias latest y 3.x usan thinkingLevel. El resto, thinkingBudget 0."""
+    slug = (model or "").lower()
+    nums = [int(n) for n in _VER.findall(slug)]
     major = nums[0] if nums else 0
-    if major >= 3:
+    if not nums or "latest" in slug or major >= 3:
         return {"thinkingLevel": "minimal"}
     return {"thinkingBudget": 0}
 
@@ -126,7 +127,8 @@ async def complete(
     url = GEMINI_API.format(model=model)
     if fast:
         resp = await _post(_fast_http(timeout or 2.5), url, headers, payload, model)
-        if resp.status_code == 400 and "thinking" in _error_message(resp).lower():
+        # Gemini 3 / alias latest rechaza thinkingBudget con 400 "invalid argument", sin decir "thinking".
+        if resp.status_code == 400 and "thinkingConfig" in payload["generationConfig"]:
             payload["generationConfig"].pop("thinkingConfig", None)
             resp = await _post(_fast_http(timeout or 2.5), url, headers, payload, model)
     else:

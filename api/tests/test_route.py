@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.llm.errors import LLMError  # noqa: E402
 from app.llm.local_route import PROFILES, fallback_id, order_route_models, pack, parse_choice  # noqa: E402
+from app.llm.providers import gemini as gemini_mod  # noqa: E402
 from app.routers import route as route_mod  # noqa: E402
 
 
@@ -351,6 +352,68 @@ class RouteHttpTests(unittest.TestCase):
         self.assertEqual(res.json()["reason"], "timeout")
         self.assertEqual(res.json()["keep_messages"], 4)
         self.assertEqual(res.json()["system"], "lean")
+
+
+class _JsonResp:
+    def __init__(self, status: int, payload: dict):
+        self.status_code = status
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class ThinkingConfigTests(unittest.IsolatedAsyncioTestCase):
+    def test_latest_alias_uses_thinking_level(self):
+        self.assertEqual(
+            gemini_mod._thinking_off("gemini-flash-lite-latest"),
+            {"thinkingLevel": "minimal"},
+        )
+        self.assertEqual(gemini_mod._thinking_off("gemini-flash-latest"), {"thinkingLevel": "minimal"})
+        self.assertEqual(gemini_mod._thinking_off("gemini-2.0-flash"), {"thinkingBudget": 0})
+
+    async def test_fast_400_retries_without_thinking_config(self):
+        seen: list[dict] = []
+
+        class FakeClient:
+            is_closed = False
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def post(self, url, headers=None, json=None):
+                seen.append(
+                    {
+                        "generationConfig": dict(json["generationConfig"]),
+                        "thinkingConfig": dict(json["generationConfig"].get("thinkingConfig") or {}),
+                    }
+                )
+                if len(seen) == 1:
+                    return _JsonResp(400, {"error": {"message": "Request contains an invalid argument."}})
+                return _JsonResp(
+                    200,
+                    {
+                        "candidates": [{"content": {"parts": [{"text": '{"profile":"standard","reason":"ok"}'}]}}],
+                        "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1},
+                    },
+                )
+
+        gemini_mod._fast_client = None
+        with mock.patch.object(gemini_mod.httpx, "AsyncClient", FakeClient):
+            out = await gemini_mod.complete(
+                [{"role": "user", "content": "n=1"}],
+                api_key="not-a-real-key",
+                model="gemini-flash-lite-latest",
+                max_tokens=32,
+                temperature=0.0,
+                fast=True,
+                timeout=1.0,
+            )
+        gemini_mod._fast_client = None
+        self.assertEqual(out["text"], '{"profile":"standard","reason":"ok"}')
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(seen[0]["thinkingConfig"], {"thinkingLevel": "minimal"})
+        self.assertEqual(seen[1]["thinkingConfig"], {})
 
 
 if __name__ == "__main__":
