@@ -105,6 +105,10 @@ class Settings:
     allin_longctx_model: str = (
         os.getenv("ALLIN_LONGCTX_MODEL") or os.getenv("OLLAMA_LONGCTX_MODEL") or "mistral-nemo:12b"
     ).strip()
+    # Vacío: solo el slot de código (OLLAMA_MODEL / ALLIN_CODE_MODEL) nace activo.
+    # "*" activa los cuatro slots. Una lista separada por comas fija esos slugs.
+    # El proyecto puede cambiarlo después (API / UI). No carga ni borra modelos en Ollama.
+    ollama_default_active: str = (os.getenv("OLLAMA_DEFAULT_ACTIVE_MODELS") or "").strip()
     openrouter_referer: str = os.getenv("ASKBOX_OPENROUTER_REFERER", "https://askbox.local")
     openrouter_title: str = os.getenv("ASKBOX_OPENROUTER_TITLE", "askbox")
 

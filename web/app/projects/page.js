@@ -463,6 +463,121 @@ function Prompts({ project }) {
   );
 }
 
+function LocalModels({ project }) {
+  const [models, setModels] = useState([]);
+  const [primary, setPrimary] = useState("");
+  const [msg, setMsg] = useState("");
+  const [ok, setOk] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    api(`/v1/projects/${project.id}/ollama-models`)
+      .then((data) => {
+        setModels(data.models || []);
+        setPrimary(data.primary || "");
+      })
+      .catch((e) => setMsg(e.message));
+  }, [project.id]);
+  useEffect(() => { load(); }, [load]);
+
+  function toggle(slug) {
+    setModels((prev) => {
+      const next = prev.map((m) => (m.slug === slug ? { ...m, enabled: !m.enabled } : m));
+      const enabledRows = next.filter((m) => m.enabled);
+      setPrimary((cur) => {
+        if (enabledRows.some((m) => m.slug === cur)) return cur;
+        if (!enabledRows.length) return "";
+        const preferred = enabledRows.find((m) => (m.roles || []).includes("code")) || enabledRows[0];
+        return preferred.slug;
+      });
+      return next;
+    });
+  }
+
+  async function save(e) {
+    e.preventDefault();
+    setMsg("");
+    setOk("");
+    setBusy(true);
+    try {
+      const data = await api(`/v1/projects/${project.id}/ollama-models`, {
+        method: "PUT",
+        body: {
+          primary: primary || null,
+          models: models.map((m) => ({ slug: m.slug, enabled: !!m.enabled })),
+        },
+      });
+      setModels(data.models || []);
+      setPrimary(data.primary || "");
+      setOk("Preferencia guardada. El enrutado automático usará solo los modelos activos.");
+    } catch (err) {
+      setMsg(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} style={{ marginTop: "1.25rem" }}>
+      <div className="card-header" style={{ borderBottomColor: "var(--border-subtle)" }}>
+        <div>
+          <h4>4. Modelos locales (Ollama)</h4>
+          <p className="field-desc" style={{ margin: 0 }}>
+            Activa o desactiva qué modelos puede elegir <strong>mode=allin</strong> y <strong>provider=ollama</strong> sin modelo fijo.
+            Si la ruta cae en uno inactivo, se usa el modelo principal activo. Si no queda ninguno, la petición sigue por la nube.
+            Desactivar no borra el modelo de Ollama. Un <code>model</code> concreto en la petición sigue llamando a ese slug.
+          </p>
+        </div>
+        <span className="badge badge-slate">Solo enrutado</span>
+      </div>
+
+      {models.length === 0 ? (
+        <p className="muted" style={{ fontSize: "0.88rem" }}>Cargando modelos locales…</p>
+      ) : (
+        <ul className="clean-list" style={{ marginBottom: "0.75rem" }}>
+          {models.map((m) => (
+            <li key={m.slug}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.15rem" }}>
+                <code style={{ fontSize: "0.85rem" }}>{m.slug}</code>
+                <span className="muted" style={{ fontSize: "0.8rem" }}>{m.label}</span>
+              </div>
+              <div style={{ display: "flex", gap: "1rem", alignItems: "center", flexWrap: "wrap" }}>
+                <label className="checkbox-label" style={{ margin: 0 }}>
+                  <input
+                    type="checkbox"
+                    checked={!!m.enabled}
+                    onChange={() => toggle(m.slug)}
+                  />
+                  <span>{m.enabled ? "Activo" : "Inactivo"}</span>
+                </label>
+                <label className="checkbox-label" style={{ margin: 0 }}>
+                  <input
+                    type="radio"
+                    name={`ollama-primary-${project.id}`}
+                    checked={primary === m.slug}
+                    disabled={!m.enabled}
+                    onChange={() => setPrimary(m.slug)}
+                  />
+                  <span>Principal</span>
+                </label>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+        <button type="submit" className="btn-primary btn-sm" disabled={busy || models.length === 0}>
+          {busy ? "Guardando…" : "Guardar modelos locales"}
+        </button>
+        <small className="muted">Por defecto solo el de código queda activo.</small>
+      </div>
+      {ok && <div className="muted" style={{ marginTop: "0.5rem", color: "var(--emerald-500)" }}>{ok}</div>}
+      {msg && <div className="err" style={{ marginTop: "0.5rem" }}>{msg}</div>}
+    </form>
+  );
+}
+
 export default function Projects() {
   const router = useRouter();
   const [projects, setProjects] = useState([]);
@@ -585,6 +700,7 @@ export default function Projects() {
             <Keys project={p} />
             <AccessTokens project={p} />
             <Prompts project={p} />
+            <LocalModels project={p} />
           </div>
         ))
       )}

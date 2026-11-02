@@ -27,6 +27,7 @@ from app.llm.heuristics import (  # noqa: E402
     ollama_auto_kind,
 )
 from app.llm.keypool import KeyHandle  # noqa: E402
+from app.llm.local_models import all_enabled_prefs  # noqa: E402
 from app.llm.ollama_route import parse_explicit_provider  # noqa: E402
 from app.llm.providers import gemini, openrouter  # noqa: E402
 from app.llm.router import AskFailure, ask  # noqa: E402
@@ -293,8 +294,19 @@ class BoundaryTests(unittest.TestCase):
         self.assertNotIn("allin", blob)
 
 
-def _project() -> dict:
-    return {"id": "p1", "cache_ttl_seconds": 0, "default_tier": "auto", "allow_system_keys": True}
+def _project(**overrides) -> dict:
+    """Proyecto de tests de ruta. Por defecto los cuatro slots locales están activos,
+    para seguir comprobando código / razón / NLP / contexto largo cuando el proyecto los enciende.
+    """
+    base = {
+        "id": "p1",
+        "cache_ttl_seconds": 0,
+        "default_tier": "auto",
+        "allow_system_keys": True,
+        "ollama_models": all_enabled_prefs(),
+    }
+    base.update(overrides)
+    return base
 
 
 def _ok(model: str, text: str = "ok") -> dict:
@@ -807,6 +819,229 @@ class AllinRouteTests(unittest.IsolatedAsyncioTestCase):
         kwargs = cascade.await_args.kwargs
         self.assertEqual(kwargs["json_schema"], schema)
         self.assertEqual(kwargs["ttl"], 0)
+
+
+def _disabled_locals() -> dict:
+    from app.llm.local_models import slot_catalog
+
+    return {
+        "primary": "",
+        "enabled": {item["slug"]: False for item in slot_catalog()},
+    }
+
+
+class LocalActivePolicyTests(unittest.IsolatedAsyncioTestCase):
+    """Default de despliegue: solo el modelo de código está activo."""
+
+    async def test_inactive_reason_uses_qwen_on_ollama_auto(self):
+        complete = _RecordingComplete()
+        cascade = AsyncMock(side_effect=AssertionError("hay un local activo"))
+        with (
+            patch("app.llm.ollama_local.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(ollama_models={}),
+                messages=[{
+                    "role": "user",
+                    "content": "Depura paso a paso el deadlock de Sage X3 entre dos transacciones",
+                }],
+                tier="fast",
+                max_tokens=64,
+                provider="ollama",
+                model="auto",
+            )
+        cascade.assert_not_called()
+        self.assertEqual([c[0] for c in complete.calls], [settings.allin_code_model])
+        self.assertEqual(res["provider"], "ollama")
+        self.assertEqual(res["models_chain"], [f"ollama:{settings.allin_code_model}"])
+        self.assertEqual(res["model_used"], settings.allin_code_model)
+
+    async def test_inactive_reason_uses_qwen_on_allin(self):
+        complete = _RecordingComplete()
+        cascade = AsyncMock(side_effect=AssertionError("hay un local activo"))
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(ollama_models={}),
+                messages=[{"role": "user", "content": "Di hola en una frase"}],
+                tier="fast",
+                max_tokens=32,
+                mode="allin",
+            )
+        cascade.assert_not_called()
+        self.assertEqual([c[0] for c in complete.calls], [settings.allin_code_model])
+        self.assertEqual(res["provider"], "allin")
+        self.assertEqual(res["models_chain"], [f"ollama:{settings.allin_code_model}"])
+
+    async def test_all_locals_inactive_falls_back_to_cloud(self):
+        complete = _RecordingComplete()
+        cascade = AsyncMock(return_value={
+            "text": "desde la nube",
+            "provider": "gemini",
+            "model_used": "gemini-test",
+            "models_chain": ["gemini:gemini-test"],
+            "attempts": 1,
+            "input_tokens": 2,
+            "output_tokens": 3,
+            "estimated_cost_usd": 0.01,
+            "key_id": None,
+            "key_source": "system",
+            "cache_hit": False,
+            "tier_used": "fast",
+        })
+        with (
+            patch("app.llm.allin.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(ollama_models=_disabled_locals()),
+                messages=[{"role": "user", "content": "Di hola en una frase"}],
+                tier="fast",
+                max_tokens=32,
+                mode="allin",
+            )
+        self.assertEqual(complete.calls, [])
+        cascade.assert_awaited()
+        self.assertEqual(res["text"], "desde la nube")
+        self.assertEqual(res["provider"], "gemini")
+        self.assertEqual(res["models_chain"], ["gemini:gemini-test"])
+        self.assertNotIn("ollama:", " ".join(res["models_chain"]))
+
+    async def test_ollama_auto_with_no_active_local_uses_cloud(self):
+        complete = _RecordingComplete()
+        cascade = AsyncMock(return_value={
+            "text": "nube",
+            "provider": "openrouter",
+            "model_used": "peer",
+            "models_chain": ["openrouter:peer"],
+            "attempts": 1,
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "estimated_cost_usd": 0.0,
+            "key_id": None,
+            "key_source": "project",
+            "cache_hit": False,
+            "tier_used": "fast",
+        })
+        with (
+            patch("app.llm.ollama_local.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(ollama_models=_disabled_locals()),
+                messages=[{
+                    "role": "user",
+                    "content": "Explica el interbloqueo de dos transacciones que se esperan",
+                }],
+                tier="fast",
+                max_tokens=32,
+                provider="ollama",
+            )
+        self.assertEqual(complete.calls, [])
+        cascade.assert_awaited()
+        self.assertEqual(res["provider"], "openrouter")
+        self.assertEqual(res["text"], "nube")
+
+    async def test_enabled_deepseek_stays_deepseek(self):
+        complete = _RecordingComplete()
+        cascade = AsyncMock(side_effect=AssertionError("deepseek está activo"))
+        prefs = {
+            "primary": settings.allin_code_model,
+            "enabled": {settings.ollama_reason_model: True, settings.allin_reason_model: True},
+        }
+        with (
+            patch("app.llm.ollama_local.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res = await ask(
+                None,
+                None,
+                project=_project(ollama_models=prefs),
+                messages=[{
+                    "role": "user",
+                    "content": "Depura paso a paso el deadlock de Sage X3 entre dos transacciones",
+                }],
+                tier="fast",
+                max_tokens=64,
+                provider="ollama",
+                model="auto",
+            )
+        cascade.assert_not_called()
+        self.assertEqual([c[0] for c in complete.calls], [settings.ollama_reason_model])
+        self.assertEqual(res["models_chain"], [f"ollama:{settings.ollama_reason_model}"])
+
+        complete_allin = _RecordingComplete()
+        with (
+            patch("app.llm.allin.ollama.complete", complete_allin),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            res_allin = await ask(
+                None,
+                None,
+                project=_project(ollama_models=prefs),
+                messages=[{"role": "user", "content": "Di hola en una frase"}],
+                tier="fast",
+                max_tokens=32,
+                mode="allin",
+            )
+        self.assertEqual([c[0] for c in complete_allin.calls], [settings.allin_reason_model])
+        self.assertEqual(res_allin["provider"], "allin")
+
+    async def test_inactive_nlp_longctx_and_pipeline_land_on_qwen(self):
+        complete = _RecordingComplete()
+        cascade = AsyncMock(side_effect=AssertionError("qwen sigue activo"))
+        project = _project(ollama_models={})
+        manual = _pad("Lee el manual de referencia.\n\nFuente 1: alpha\nFuente 2: beta\n", 2500)
+        cases = [
+            "Clasifica este ticket y categoriza la intención del cliente",
+            manual,
+            "Hay un deadlock y un bug complejo. Escribe el código SQL que lo corrige.",
+        ]
+        with (
+            patch("app.llm.ollama_local.ollama.complete", complete),
+            patch("app.llm.router._cascade", cascade),
+        ):
+            for prompt in cases:
+                await ask(
+                    None,
+                    None,
+                    project=project,
+                    messages=[{"role": "user", "content": prompt}],
+                    tier="fast",
+                    max_tokens=64,
+                    provider="ollama",
+                    model="auto",
+                )
+        cascade.assert_not_called()
+        self.assertTrue(complete.calls)
+        self.assertTrue(all(model == settings.allin_code_model for model, _ in complete.calls))
+
+    async def test_explicit_slug_ignores_inactive_flag(self):
+        complete = _RecordingComplete()
+        with patch("app.llm.ollama_local.ollama.complete", complete):
+            res = await ask(
+                None,
+                None,
+                project=_project(ollama_models=_disabled_locals()),
+                messages=[{"role": "user", "content": "Di hola en una frase"}],
+                tier="fast",
+                max_tokens=32,
+                provider="ollama",
+                model=settings.ollama_reason_model,
+            )
+        self.assertEqual([c[0] for c in complete.calls], [settings.ollama_reason_model])
+        self.assertEqual(res["provider"], "ollama")
 
 
 class ExtractAndWebTests(unittest.IsolatedAsyncioTestCase):
