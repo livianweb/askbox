@@ -1,10 +1,10 @@
 """POST /v1/route — controlador de contexto para el 7B local (sanitize / OpenClaw).
 
 sanitize envía señales cortas, no el hilo completo. Un modelo de nube del tier
-`fast` elige un perfil fijo. Este endpoint solo llama a Gemini (el modelo fast
-ya configurado en el catálogo); OpenRouter no entra, para que un 402 no coma
-el presupuesto. sanitize aplica `keep_messages`, `system` y `max_out`. Si la
-nube no responde, la respuesta es standard (keep=4), no lean.
+`fast` elige un perfil fijo. Una sola llamada al Gemini más rápido del
+catálogo (8b si existe, si no el flash-lite de versión más baja). OpenRouter
+no entra. sanitize aplica `keep_messages`, `system` y `max_out`. Si la nube
+no responde, la respuesta es standard (keep=4), no lean.
 
 Auth (`Authorization: Bearer …`):
 - Token de proyecto `ab_live_…` con scope `ask:read` (el valor que sanitize
@@ -41,6 +41,7 @@ import asyncio
 import hmac
 import logging
 import os
+import time
 import uuid
 from typing import Any, Literal
 
@@ -50,17 +51,20 @@ from pydantic import BaseModel, Field, field_validator
 from app import ratelimit
 from app.config import settings
 from app.deps import _bearer_token, ask_auth, err
-from app.llm import router as llm_router
+from app.llm import keypool
 from app.llm.local_route import (
     PROFILE_IDS,
-    ROUTE_SCHEMA,
+    ROUTE_MAX_TOKENS,
     build_messages,
     fallback_id,
     is_fallback_reason,
     pack,
     parse_choice,
+    pick_fastest_gemini,
 )
-from app.llm.router import AskFailure
+from app.llm.providers import gemini
+from app.project_auth import has_scope
+from app.security import token_hash
 
 log = logging.getLogger("askbox.route")
 
@@ -68,6 +72,9 @@ router = APIRouter(prefix="/v1", tags=["route"])
 
 _TIMEOUT_CAP_MS = 780.0
 _TIMEOUT_FLOOR_MS = 50.0
+# slug + clave de Gemini, para no repetir catálogo y keypool en cada turno.
+_HOT: dict[str, tuple[float, str, str]] = {}
+_HOT_TTL_S = 30.0
 
 
 class RouteIn(BaseModel):
@@ -144,17 +151,51 @@ async def route_caller(request: Request) -> dict[str, Any]:
         and not bearer.startswith("ab_live_")
         and hmac.compare_digest(bearer.encode(), token.encode())
     ):
-        return {"mode": "service", "user_id": None, "project_id": None, "access_token_id": None}
+        return {"mode": "service", "user_id": None, "project_id": None, "access_token_id": None, "project": None}
     if not bearer and not request.cookies.get(settings.cookie_name):
         raise err(401, "unauthenticated", "Autenticación requerida (Bearer ASKBOX_TOKEN).")
     if bearer and not bearer.startswith("ab_live_"):
         raise err(401, "unauthenticated", "Token inválido.")
+    if bearer and bearer.startswith("ab_live_"):
+        # Una query: token + proyecto. El hot path no espera un segundo SELECT.
+        try:
+            pool = request.app.state.pool
+        except AttributeError:
+            pool = None
+        row = None
+        if pool is not None:
+            row = await pool.fetchrow(
+                "SELECT t.id, t.project_id, t.scopes, p.user_id, p.allow_system_keys, "
+                "p.default_tier, p.cache_ttl_seconds "
+                "FROM project_access_tokens t JOIN projects p ON p.id = t.project_id "
+                "WHERE t.token_hash = $1 AND t.revoked_at IS NULL",
+                token_hash(bearer),
+            )
+        if not row:
+            raise err(401, "unauthenticated", "Token de proyecto inválido o revocado.")
+        scopes = list(row["scopes"] or [])
+        if not has_scope(scopes, "ask:read"):
+            raise err(403, "forbidden", "El token no tiene scope ask:read.")
+        return {
+            "mode": "access_token",
+            "user_id": row["user_id"],
+            "project_id": row["project_id"],
+            "access_token_id": row["id"],
+            "project": {
+                "id": row["project_id"],
+                "user_id": row["user_id"],
+                "allow_system_keys": row["allow_system_keys"],
+                "default_tier": row["default_tier"],
+                "cache_ttl_seconds": row["cache_ttl_seconds"],
+            },
+        }
     auth = await ask_auth(request)
     return {
         "mode": auth.mode,
         "user_id": auth.user_id,
         "project_id": auth.project_id,
         "access_token_id": auth.access_token_id,
+        "project": None,
     }
 
 
@@ -183,32 +224,57 @@ async def load_project(pool, caller: dict[str, Any]):
     )
 
 
-# Solo Gemini: el fast del catálogo (Flash / Flash-Lite según priority).
-# OpenRouter queda fuera para que un 402 no agote ASKBOX_ROUTE_TIMEOUT_MS.
-ROUTE_PROVIDERS = ("gemini",)
+async def _gemini_ready(pool, project) -> tuple[str, str]:
+    """Slug más rápido + clave. Cache corta en proceso (no loguea la clave)."""
+    pid = str(project["id"])
+    now = time.monotonic()
+    hit = _HOT.get(pid)
+    if hit and hit[0] > now:
+        return hit[1], hit[2]
+    rows, keys = await asyncio.gather(
+        pool.fetch("SELECT slug FROM model_catalog WHERE enabled AND provider = 'gemini'"),
+        keypool.candidates(pool, project, "gemini"),
+    )
+    slug = pick_fastest_gemini([r["slug"] for r in rows])
+    if not slug or not keys:
+        log.info("route sin gemini util slug=%s keys=%s", slug or "-", len(keys))
+        raise RuntimeError("no_gemini")
+    secret = keys[0].secret
+    _HOT[pid] = (now + _HOT_TTL_S, slug, secret)
+    if len(_HOT) > 32:
+        _HOT.clear()
+        _HOT[pid] = (now + _HOT_TTL_S, slug, secret)
+    return slug, secret
 
 
-async def cloud_text(pool, redis, project, messages: list[dict]) -> str:
-    """Tier fast, solo Gemini. Sin bajar a balanced/strong ni a OpenRouter."""
-    res = await llm_router.ask(
-        pool,
-        redis,
-        project=dict(project),
-        messages=messages,
-        tier="fast",
-        max_tokens=64,
-        json_schema=ROUTE_SCHEMA,
+async def cloud_text(pool, redis, project, messages: list[dict], attempt: dict | None = None) -> str:
+    """Una llamada al Gemini más rápido. Sin cascada ni OpenRouter."""
+    del redis  # el hot path no espera a Redis
+    slug, secret = await _gemini_ready(pool, project)
+    if attempt is not None:
+        attempt["model"] = slug
+    res = await gemini.complete(
+        messages,
+        api_key=secret,
+        model=slug,
+        max_tokens=ROUTE_MAX_TOKENS,
         temperature=0.0,
-        providers=ROUTE_PROVIDERS,
-        downgrade=False,
+        fast=True,
+        timeout=2.5,
     )
     return str(res.get("text") or "")
 
 
-async def choose_profile(signals: dict[str, Any], cloud, timeout_s: float) -> dict[str, Any]:
+async def choose_profile(
+    signals: dict[str, Any],
+    cloud,
+    timeout_s: float,
+    attempt: dict | None = None,
+) -> dict[str, Any]:
     allowed = list(signals.get("profiles") or PROFILE_IDS)
     safe = fallback_id(allowed)
     messages = build_messages(signals, allowed)
+    started = time.monotonic()
 
     async def _call() -> str:
         return await cloud(messages)
@@ -216,9 +282,14 @@ async def choose_profile(signals: dict[str, Any], cloud, timeout_s: float) -> di
     try:
         text = await asyncio.wait_for(_call(), timeout_s)
     except TimeoutError:
+        elapsed = int((time.monotonic() - started) * 1000)
+        model = (attempt or {}).get("model") or "-"
+        log.info("route timeout model=%s latency_ms=%s", model, elapsed)
         return pack(safe, "timeout")
-    except (AskFailure, Exception) as exc:  # noqa: BLE001
-        log.info("route nube no disponible: %s", type(exc).__name__)
+    except Exception as exc:  # noqa: BLE001
+        elapsed = int((time.monotonic() - started) * 1000)
+        model = (attempt or {}).get("model") or "-"
+        log.info("route nube no disponible: %s model=%s latency_ms=%s", type(exc).__name__, model, elapsed)
         return pack(safe, "cloud_unavailable")
     parsed = parse_choice(text, allowed)
     if not parsed:
@@ -244,8 +315,9 @@ def _bucket(caller: dict[str, Any]) -> str:
         "o con el secreto `ASKBOX_TOKEN`. "
         "Cuerpo: last_user, n_messages, approx_chars, has_code, has_tools, profiles. "
         "Respuesta: profile (lean|standard|full) y la tupla fija keep_messages, system, max_out, reason. "
-        "Solo Gemini (tier fast del catálogo). Timeout, nube caída o límite de ritmo: HTTP 200 "
-        "con standard (keep=4) si está en profiles. Lean solo si la nube lo elige."
+        "Una llamada al Gemini más rápido del catálogo (8b o flash-lite), max 32 tokens, sin thinking. "
+        "Timeout, nube caída o límite de ritmo: HTTP 200 con standard (keep=4) si está en profiles. "
+        "Lean solo si la nube lo elige."
     ),
 )
 async def route_turn(body: RouteIn, request: Request):
@@ -267,18 +339,29 @@ async def route_turn(body: RouteIn, request: Request):
         pool = request.app.state.pool
     except AttributeError:
         pool = None
-    try:
-        project = await load_project(pool, caller)
-    except Exception as exc:  # noqa: BLE001
-        log.info("route proyecto no disponible: %s", type(exc).__name__)
-        project = None
+    project = caller.get("project")
+    if project is None:
+        try:
+            project = await load_project(pool, caller)
+        except Exception as exc:  # noqa: BLE001
+            log.info("route proyecto no disponible: %s", type(exc).__name__)
+            project = None
+    attempt: dict[str, Any] = {"model": None}
+    started = time.monotonic()
 
     async def cloud(messages: list[dict]) -> str:
         if project is None:
             raise RuntimeError("no_project")
-        return await cloud_text(pool, redis, project, messages)
+        return await cloud_text(pool, redis, project, messages, attempt)
 
-    decision = await choose_profile(signals, cloud, route_timeout_s())
+    decision = await choose_profile(signals, cloud, route_timeout_s(), attempt)
     source = decision["reason"] if is_fallback_reason(decision["reason"]) else "cloud"
-    log.info("route profile=%s source=%s", decision["profile"], source)
+    if source == "cloud":
+        log.info(
+            "route profile=%s source=%s model=%s latency_ms=%s",
+            decision["profile"],
+            source,
+            attempt.get("model") or "-",
+            int((time.monotonic() - started) * 1000),
+        )
     return decision
