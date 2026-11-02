@@ -7,7 +7,11 @@ const nextConfig = {
   output: "standalone",
   experimental: { proxyTimeout: 90000 },
   async rewrites() {
-    return [{ source: "/api/:path*", destination: `${API_INTERNAL_URL}/:path*` }];
+    return [
+      // Playbook de IDE en el origen público (/v1/ide/…) sin mover el resto de /v1.
+      { source: "/v1/ide/:path*", destination: `${API_INTERNAL_URL}/v1/ide/:path*` },
+      { source: "/api/:path*", destination: `${API_INTERNAL_URL}/:path*` },
+    ];
   },
 };
 export default nextConfig;
