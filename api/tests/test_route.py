@@ -272,6 +272,8 @@ class RouteHttpTests(unittest.TestCase):
         self.assertEqual(seen["kwargs"]["max_tokens"], 32)
         self.assertTrue(seen["kwargs"]["fast"])
         self.assertEqual(seen["kwargs"]["temperature"], 0.0)
+        self.assertEqual(seen["kwargs"]["json_schema"]["required"], ["profile"])
+        self.assertEqual(seen["kwargs"]["json_schema"]["type"], "OBJECT")
 
     def test_404_skips_to_next_slug(self):
         route_mod._MISSING.clear()
@@ -411,9 +413,54 @@ class ThinkingConfigTests(unittest.IsolatedAsyncioTestCase):
             )
         gemini_mod._fast_client = None
         self.assertEqual(out["text"], '{"profile":"standard","reason":"ok"}')
+        self.assertNotIn("responseMimeType", seen[0]["generationConfig"])
         self.assertEqual(len(seen), 2)
         self.assertEqual(seen[0]["thinkingConfig"], {"thinkingLevel": "minimal"})
         self.assertEqual(seen[1]["thinkingConfig"], {})
+
+    async def test_json_schema_sets_response_mime_and_skips_thinking(self):
+        seen: list[dict] = []
+
+        class FakeClient:
+            is_closed = False
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def post(self, url, headers=None, json=None):
+                cfg = dict(json["generationConfig"])
+                seen.append(cfg)
+                return _JsonResp(
+                    200,
+                    {
+                        "candidates": [{"content": {"parts": [{"text": '{"profile":"lean","reason":"hi"}'}]}}],
+                        "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1},
+                    },
+                )
+
+        schema = {
+            "type": "OBJECT",
+            "properties": {"profile": {"type": "STRING"}, "reason": {"type": "STRING"}},
+            "required": ["profile"],
+        }
+        gemini_mod._fast_client = None
+        with mock.patch.object(gemini_mod.httpx, "AsyncClient", FakeClient):
+            out = await gemini_mod.complete(
+                [{"role": "user", "content": "u=hola"}],
+                api_key="not-a-real-key",
+                model="gemini-flash-lite-latest",
+                max_tokens=32,
+                temperature=0.0,
+                fast=True,
+                timeout=1.0,
+                json_schema=schema,
+            )
+        gemini_mod._fast_client = None
+        self.assertEqual(seen[0]["responseMimeType"], "application/json")
+        self.assertEqual(seen[0]["responseSchema"], schema)
+        self.assertNotIn("thinkingConfig", seen[0])
+        self.assertEqual(parse_choice(out["text"], ["lean", "standard", "full"]), ("lean", "hi"))
+        self.assertEqual(len(seen), 1)
 
 
 if __name__ == "__main__":
