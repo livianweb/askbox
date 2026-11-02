@@ -58,24 +58,35 @@ class ProfileContractTests(unittest.TestCase):
         self.assertIsNone(parse_choice('{"profile":"huge"}', allowed))
         self.assertIsNone(parse_choice('{"profile":"full"}', ["lean", "standard"]))
 
-    def test_order_is_lite_then_flash_then_8b(self):
-        self.assertEqual(
-            order_route_models(
-                [
-                    "gemini-1.5-flash-8b",
-                    "gemini-2.5-flash-lite",
-                    "gemini-2.0-flash",
-                    "gemini-2.0-flash-lite",
-                ]
-            ),
+    def test_order_prefers_latest_lite_and_drops_dead_slugs(self):
+        ordered = order_route_models(
             [
-                "gemini-2.0-flash-lite",
-                "gemini-2.5-flash-lite",
-                "gemini-2.0-flash",
                 "gemini-1.5-flash-8b",
+                "gemini-2.0-flash",
+                "gemini-2.0-flash-lite",
+                "gemini-2.5-flash",
+                "gemini-2.5-flash-lite",
+                "gemini-3.1-flash-lite",
+                "gemini-flash-latest",
+                "gemini-flash-lite-latest",
+            ]
+        )
+        self.assertEqual(
+            ordered[:4],
+            [
+                "gemini-flash-lite-latest",
+                "gemini-2.5-flash-lite",
+                "gemini-flash-latest",
+                "gemini-3.1-flash-lite",
             ],
         )
-        self.assertEqual(order_route_models([]), [])
+        self.assertNotIn("gemini-2.0-flash-lite", ordered)
+        self.assertNotIn("gemini-1.5-flash-8b", ordered)
+        self.assertNotIn("gemini-2.5-flash", ordered)
+        self.assertEqual(
+            order_route_models([])[:2],
+            ["gemini-flash-lite-latest", "gemini-flash-latest"],
+        )
 
     def test_pack_collapses_reason(self):
         out = pack("lean", "  timeout \n now ")
@@ -256,7 +267,7 @@ class RouteHttpTests(unittest.TestCase):
         route_mod._HOT.pop(str(project["id"]), None)
         route_mod._MISSING.clear()
         self.assertIn("full", text)
-        self.assertEqual(seen["kwargs"]["model"], "gemini-2.5-flash-lite")
+        self.assertEqual(seen["kwargs"]["model"], "gemini-flash-lite-latest")
         self.assertEqual(seen["kwargs"]["max_tokens"], 32)
         self.assertTrue(seen["kwargs"]["fast"])
         self.assertEqual(seen["kwargs"]["temperature"], 0.0)
@@ -287,8 +298,10 @@ class RouteHttpTests(unittest.TestCase):
 
         async def fake_complete(_messages, **kwargs):
             calls.append(kwargs["model"])
-            if kwargs["model"].endswith("2.5-flash-lite"):
+            if kwargs["model"] == "gemini-flash-lite-latest":
                 raise LLMError("not found", status=404, kind="retry")
+            if "2.0" in kwargs["model"] or "8b" in kwargs["model"]:
+                raise AssertionError(kwargs["model"])
             return {"text": '{"profile":"standard","reason":"ok"}', "model": kwargs["model"]}
 
         with mock.patch.object(route_mod.keypool, "candidates", fake_keys), mock.patch.object(
@@ -300,8 +313,8 @@ class RouteHttpTests(unittest.TestCase):
         route_mod._HOT.pop(str(project["id"]), None)
         route_mod._MISSING.clear()
         self.assertIn("standard", text)
-        self.assertEqual(calls, ["gemini-2.5-flash-lite", "gemini-2.0-flash"])
-        self.assertIn("route gemini 404 model=gemini-2.5-flash-lite", "\n".join(logs.output))
+        self.assertEqual(calls, ["gemini-flash-lite-latest", "gemini-2.5-flash-lite"])
+        self.assertIn("route gemini 404 model=gemini-flash-lite-latest", "\n".join(logs.output))
 
     def test_timeout_log_names_model(self):
         async def slow(_messages):

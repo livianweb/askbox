@@ -1,10 +1,12 @@
 """POST /v1/route — controlador de contexto para el 7B local (sanitize / OpenClaw).
 
 sanitize envía señales cortas, no el hilo completo. Un modelo de nube del tier
-`fast` elige un perfil fijo. Una sola llamada al Gemini más rápido del
-catálogo (8b si existe, si no el flash-lite de versión más baja). OpenRouter
-no entra. sanitize aplica `keep_messages`, `system` y `max_out`. Si la nube
-no responde, la respuesta es standard (keep=4), no lean.
+`fast` elige un perfil fijo. La primera llamada es gemini-flash-lite-latest
+(clave del proyecto; GEMINI_API_KEY vacío no importa si hay clave en BD).
+2.0 y 8b no se usan. OpenRouter no entra. Si la nube no responde a tiempo,
+la respuesta es standard con keep=4 y system=lean. La llamada en frío puede
+seguir en segundo plano (~15–20 s) para que la siguiente, ya caliente, quepa
+en el presupuesto.
 
 Auth (`Authorization: Bearer …`):
 - Token de proyecto `ab_live_…` con scope `ask:read` (el valor que sanitize
@@ -79,6 +81,8 @@ _HOT_TTL_S = 30.0
 # generateContent 404: el id no existe para esta clave. No se reintenta.
 _MISSING: set[str] = set()
 _MAX_MODEL_TRIES = 4
+# La primera generateContent puede tardar 15–20 s. No se cancela: calienta el modelo.
+_inflight: asyncio.Task | None = None
 
 
 class RouteIn(BaseModel):
@@ -259,7 +263,7 @@ async def _candidate_slugs(pool) -> list[str]:
 
 
 async def cloud_text(pool, redis, project, messages: list[dict], attempt: dict | None = None) -> str:
-    """Prueba el flash-lite más bajo del catálogo. Un 404 se salta y no se cachea."""
+    """Prueba gemini-flash-lite-latest y luego el lite versionado. Un 404 no se cachea."""
     del redis
     pid = str(project["id"])
     now = time.monotonic()
@@ -278,7 +282,7 @@ async def cloud_text(pool, redis, project, messages: list[dict], attempt: dict |
                 max_tokens=ROUTE_MAX_TOKENS,
                 temperature=0.0,
                 fast=True,
-                timeout=2.5,
+                timeout=25.0,
             )
             return str(res.get("text") or "")
         except LLMError as exc:
@@ -305,7 +309,7 @@ async def cloud_text(pool, redis, project, messages: list[dict], attempt: dict |
                 max_tokens=ROUTE_MAX_TOKENS,
                 temperature=0.0,
                 fast=True,
-                timeout=2.5,
+                timeout=25.0,
             )
         except LLMError as exc:
             if not _missing_model(exc):
@@ -337,16 +341,37 @@ async def choose_profile(
     async def _call() -> str:
         return await cloud(messages)
 
-    try:
-        text = await asyncio.wait_for(_call(), timeout_s)
-    except TimeoutError:
-        elapsed = int((time.monotonic() - started) * 1000)
-        model = (attempt or {}).get("model") or "-"
-        log.info("route timeout model=%s latency_ms=%s", model, elapsed)
+    global _inflight
+    if _inflight is not None and not _inflight.done():
+        log.info("route timeout model=%s latency_ms=0 detached=inflight", (attempt or {}).get("model") or "-")
         return _fallback_decision(safe, "timeout")
+
+    task = asyncio.create_task(_call())
+    done, _pending = await asyncio.wait({task}, timeout=timeout_s)
+    model = (attempt or {}).get("model") or "-"
+    if task not in done:
+        _inflight = task
+
+        def _clear(finished: asyncio.Task, _model: str = model) -> None:
+            global _inflight
+            if _inflight is finished:
+                _inflight = None
+            if finished.cancelled():
+                return
+            err = finished.exception()
+            if err is not None:
+                log.info("route warm end model=%s error=%s", _model, type(err).__name__)
+            else:
+                log.info("route warm end model=%s", _model)
+
+        task.add_done_callback(_clear)
+        elapsed = int((time.monotonic() - started) * 1000)
+        log.info("route timeout model=%s latency_ms=%s detached=1", model, elapsed)
+        return _fallback_decision(safe, "timeout")
+    try:
+        text = task.result()
     except Exception as exc:  # noqa: BLE001
         elapsed = int((time.monotonic() - started) * 1000)
-        model = (attempt or {}).get("model") or "-"
         log.info("route nube no disponible: %s model=%s latency_ms=%s", type(exc).__name__, model, elapsed)
         return _fallback_decision(safe, "cloud_unavailable")
     parsed = parse_choice(text, allowed)
@@ -373,8 +398,10 @@ def _bucket(caller: dict[str, Any]) -> str:
         "o con el secreto `ASKBOX_TOKEN`. "
         "Cuerpo: last_user, n_messages, approx_chars, has_code, has_tools, profiles. "
         "Respuesta: profile (lean|standard|full) y la tupla fija keep_messages, system, max_out, reason. "
-        "Prueba flash-lite (versión baja), luego flash, luego 8b. Un 404 se registra y se salta. "
+        "Orden: gemini-flash-lite-latest, luego flash-lite versionado, luego gemini-flash-latest. "
+        "2.0 y 8b no se llaman. Un 404 se salta. "
         "Timeout o nube caída: HTTP 200 standard con keep=4 y system=lean. "
+        "La primera llamada puede tardar ~15–20 s y se deja en segundo plano; con el modelo ya caliente cabe en el presupuesto. "
         "Lean de perfil solo si la nube lo elige."
     ),
 )
