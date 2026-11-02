@@ -109,14 +109,19 @@ async def _cascade_peers(
     ckey: str,
     require_vision: bool = False,
     temperature: float = 0.4,
+    providers: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     attempts = 0
     errors: list[str] = []
     fatal = False
     models_tried: list[str] = []
 
+    # providers=None conserva el orden global. /v1/route pasa solo gemini.
+    order = providers if providers is not None else PROVIDER_ORDER
     provider_keys: dict[str, list[keypool.KeyHandle]] = {}
-    for provider in PROVIDER_ORDER:
+    for provider in order:
+        if provider not in _PROVIDERS:
+            continue
         keys = await keypool.candidates(pool, project, provider)
         if keys:
             provider_keys[provider] = keys
@@ -131,7 +136,7 @@ async def _cascade_peers(
             code="no_provider_key",
         )
 
-    active = tuple(p for p in PROVIDER_ORDER if p in provider_keys)
+    active = tuple(p for p in order if p in provider_keys)
     peers = await catalog.peer_chain(
         pool, effective_tier, active, settings.max_models_per_provider, require_vision=require_vision
     )
@@ -231,6 +236,8 @@ async def _cascade(
     attachment_digest: str = "",
     require_vision: bool = False,
     temperature: float = 0.4,
+    providers: tuple[str, ...] | None = None,
+    downgrade: bool = True,
 ) -> dict[str, Any]:
     tier_attempt = effective_tier
     total_attempts = 0
@@ -248,13 +255,15 @@ async def _cascade(
                 ckey=ckey,
                 require_vision=require_vision,
                 temperature=temperature,
+                providers=providers,
             )
             if tier_attempt != effective_tier:
                 res["tier_downgraded_from"] = effective_tier
             return res
         except AskFailure as exc:
             total_attempts += exc.attempts
-            if exc.code == "no_provider_key":
+            if exc.code == "no_provider_key" or not downgrade:
+                exc.attempts = total_attempts
                 raise
             lower = prev_tier(tier_attempt)
             if not lower:
@@ -336,6 +345,8 @@ async def ask(
     model: str | None = None,
     mode: str | None = None,
     temperature: float | None = None,
+    providers: tuple[str, ...] | None = None,
+    downgrade: bool = True,
 ) -> dict[str, Any]:
     if (mode or "").strip().lower() == "allin" or (provider or "").strip().lower() == "allin":
         from app.llm.allin import run_allin
@@ -467,6 +478,8 @@ async def ask(
             attachment_digest=attachment_digest,
             require_vision=require_vision,
             temperature=temperature,
+            providers=providers,
+            downgrade=downgrade,
         )
     except AskFailure:
         if not requested_auto:
@@ -492,6 +505,8 @@ async def ask(
             attachment_digest=attachment_digest,
             require_vision=require_vision,
             temperature=temperature,
+            providers=providers,
+            downgrade=downgrade,
         )
         res["tier_used"] = escalated
         res["tier_escalated_from"] = effective_tier

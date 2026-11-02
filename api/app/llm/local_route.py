@@ -1,7 +1,7 @@
 """Perfiles fijos para el 7B local. La nube solo elige el id.
 
-sanitize (clawBox) aplica la decisión. Un timeout o un fallo de nube
-devuelve el perfil lean para no frenar Ollama.
+sanitize (clawBox) aplica la decisión. Timeout, nube caída o rate limit
+devuelven standard (keep=4). Lean solo si la nube lo elige.
 
 Tuplas congeladas (dentro del contrato):
   lean     keep=2  system=lean     max_out=96   (rango 64–128)
@@ -47,8 +47,8 @@ _FALLBACK_REASONS = frozenset({"timeout", "cloud_unavailable", "invalid_profile"
 
 
 def fallback_id(allowed: list[str]) -> str:
-    """El más corto entre los permitidos. Timeout sin lean sigue siendo el más corto."""
-    for name in PROFILE_IDS:
+    """standard (keep=4) si está permitido. Luego full. Lean solo si no hay otro."""
+    for name in ("standard", "full", "lean"):
         if name in allowed:
             return name
     return allowed[0]

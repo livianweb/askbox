@@ -109,7 +109,7 @@ Archivos **inline** en el JSON (no se guardan en servidor). La respuesta puede i
 
 sanitize (clawBox) llama aquí antes de Ollama (`qwen2.5-coder:7b`, `MAX_LOADED=1`). askBox **no** recorta el hilo: solo elige un perfil fijo para que el prefijo del 7B se reutilice. sanitize aplica `keep_messages`, `system` y `max_out`. Las preguntas triviales las filtra sanitize y no llegan a este endpoint.
 
-La decisión la toma el tier `fast` ya existente (Gemini / OpenRouter, claves del proyecto o `GEMINI_API_KEY` / `OPENROUTER_API_KEY`). No hay proveedor nuevo.
+La decisión la toma el tier `fast` de Gemini ya configurado en el catálogo (Flash o Flash-Lite, el de menor `priority`). OpenRouter no se llama en este endpoint: un 402 no debe gastar el presupuesto. Claves: las del proyecto o `GEMINI_API_KEY` si `allow_system_keys`. `/v1/ask` no cambia de orden.
 
 | Perfil | `keep_messages` | `system` | `max_out` |
 |---|---|---|---|
@@ -117,13 +117,13 @@ La decisión la toma el tier `fast` ya existente (Gemini / OpenRouter, claves de
 | `standard` | 4 | `summary` | 128 |
 | `full` | 12 (dentro de 8–12) | `full` | 256 |
 
-Si la nube supera el presupuesto, no hay clave o el JSON no vale, la respuesta sigue siendo **HTTP 200** con el perfil más corto de `profiles` (lean si está en la lista) y `reason` = `timeout` | `cloud_unavailable` | `invalid_profile` | `rate_limited`. sanitize también corta a ~700 ms y usa lean.
+Si la nube supera el presupuesto, no hay clave Gemini o el JSON no vale, la respuesta sigue siendo **HTTP 200** con **standard** (`keep_messages=4`) cuando `standard` está en `profiles`. `reason` = `timeout` | `cloud_unavailable` | `invalid_profile` | `rate_limited`. Lean solo si el modelo lo elige (o si es el único perfil permitido). sanitize corta a ~800 ms; por debajo de eso este endpoint ya ha respondido.
 
 Variables (default entre paréntesis):
 
 - `ASKBOX_TOKEN` — secreto de servicio opcional. Si el Bearer **no** empieza por `ab_live_`, se compara con esta variable. Un `ab_live_…` (scope `ask:read`) se valida como en `/v1/ask` y no hace falta duplicarlo en el entorno.
 - `ASKBOX_ROUTE_PROJECT_ID` — uuid del proyecto cuyas claves usa el secreto de servicio. Si falta, se elige el proyecto con `allow_system_keys` o con una clave activa.
-- `ASKBOX_ROUTE_TIMEOUT_MS` (500, tope 650) — presupuesto de la llamada a nube, por debajo del timeout de sanitize.
+- `ASKBOX_ROUTE_TIMEOUT_MS` (650, tope 780) — presupuesto de la llamada a Gemini, por debajo del timeout ~800 ms de sanitize. Si el `.env` del host sigue en 500, quítalo o súbelo: ese valor pisa el default.
 - `ASKBOX_ROUTE_RATE_PER_MIN` (120, `0` = sin límite).
 
 ```bash
@@ -139,7 +139,7 @@ curl -s -H "Authorization: Bearer $ASKBOX_TOKEN" -H 'Content-Type: application/j
 Timeout o nube caída:
 
 ```json
-{"profile":"lean","keep_messages":2,"system":"lean","max_out":96,"reason":"timeout"}
+{"profile":"standard","keep_messages":4,"system":"summary","max_out":128,"reason":"timeout"}
 ```
 
 ### OCR: `POST /v1/ocr`
