@@ -26,6 +26,22 @@ curl -s http://localhost:8066/ready    # db, redis y master_key
 - Web: http://localhost:8067 (`/login`, `/register`, `/forgot`, `/reset`, `/projects`, `/playground`, `/settings/deploy`, `/settings/git`; proxy `/api/*` → API)
 - **OpenAPI (Swagger / ReDoc)** detrás de la web (mismo origen que la UI): [http://localhost:8067/api/docs](http://localhost:8067/api/docs), [http://localhost:8067/api/redoc](http://localhost:8067/api/redoc), esquema en `/api/openapi.json`. Con túnel: **https://askbox.softportweb.com/api/docs** (y `/api/redoc`, `/api/openapi.json`). Acceso directo al contenedor API en `:8066` sigue en `/docs` si `ASKBOX_API_EXTERNAL_PREFIX` está vacío.
 
+## IDE / Roo Code
+
+Cliente recomendado: **Roo Code** (`RooVeterinaryInc.roo-cline`, Open VSX), no Continue.
+La base OpenAI-compatible de producción es `https://askbox.softportweb.com/v1`
+(Bearer `SANITIZE_CLIENT_TOKEN`, no `ASKBOX_TOKEN`). Perfiles: `askbox-cloud-fast`,
+`askbox-cloud-strong` (arranque) y `askbox-local-qwen7b`.
+
+- Guía: [`docs/ide/vscode-roo.md`](docs/ide/vscode-roo.md)
+- Playbook JSON (sin auth, para un agente): `GET /v1/ide/vscode-roo`
+  — público `https://askbox.softportweb.com/v1/ide/vscode-roo`
+  y también `https://askbox.softportweb.com/api/v1/ide/vscode-roo`
+- Markdown por HTTP: `GET /v1/ide/vscode-roo.md`
+
+`ASKBOX_IDE_OPENAI_BASE_URL` sustituye la base que anuncia el JSON si no es
+`{ASKBOX_PUBLIC_URL}/v1`. El token de cliente no va en el repo.
+
 ### Clonar y usar sin túnel (por defecto)
 
 Tras `cp .env.example .env` y `docker compose up -d --build`, la API y la web escuchan en **localhost** (8066/8067) o en la IP de tu LAN. No hace falta Cloudflare ni `CLOUDFLARE_TUNNEL_TOKEN`.
@@ -92,6 +108,8 @@ En Docker, el contenedor `api` no lee `.env` del repo (está enmascarado). Para 
 | POST | `/v1/settings/deploy/tunnel/provision` | `{hostname, api_token?}` crea/actualiza túnel + DNS; guarda connector; opcionalmente `.env` + docker |
 | PUT/POST | `/v1/settings/deploy/tunnel-token` | `{token}` connector → cifrado en BD (`cloudflare_tunnel`); **nunca** devuelve el token |
 | DELETE | `/v1/settings/deploy/tunnel-token` | Borra el token de túnel de la BD |
+| GET | `/v1/ide/vscode-roo` | Playbook público (JSON) para configurar VS Code + Roo Code. Sin auth ni secretos. Ver «IDE / Roo Code» |
+| GET | `/v1/ide/vscode-roo.md` | El mismo playbook en markdown |
 
 ### Adjuntos en `POST /v1/ask`
 

@@ -22,6 +22,7 @@ from app.routers import (
     batch,
     deploy_settings,
     git_settings,
+    ide,
     ocr,
     projects,
     prompts,
@@ -71,6 +72,7 @@ app.include_router(batch.router)
 app.include_router(alerts.router)
 app.include_router(git_settings.router)
 app.include_router(deploy_settings.router)
+app.include_router(ide.router)
 
 
 def custom_openapi():

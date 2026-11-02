@@ -43,6 +43,8 @@ No publica puertos en el host. Desde la misma red el health es `http://openclaw-
 
 Rutas del proxy: `GET /health`, `POST /sanitize` (vista previa del enmascarado), `GET /v1/models`, `POST /v1/chat/completions`, `/ollama/v1/{path}`.
 
+El cliente IDE (Roo Code) no habla con este proceso por el puerto publicado: usa la base pública `/v1` y el Bearer `SANITIZE_CLIENT_TOKEN`. Cómo dejar un VS Code limpio está en [`docs/ide/vscode-roo.md`](../docs/ide/vscode-roo.md); el JSON lo sirve la API askBox en `GET /v1/ide/vscode-roo` (no este proxy).
+
 ## Variables
 
 Nombres y valores de ejemplo (el token va vacío): `openclaw/.env.example`.
