@@ -15,13 +15,14 @@ OpenClaw habla OpenAI-compatible con el proxy (`sanitize-proxy:8080`). El proxy 
 ## Qué hace
 
 1. **Enmascara** antes de reenviar: claves privadas, JWT, prefijos de API key, secretos `password=` / `Bearer`, CIF/NIF e IPs privadas.
-2. **Quita el prefijo de modelo** `askbox/`, `ollama/` y `ollama-safe/` (`askbox/qwen2.5-coder:14b` → `qwen2.5-coder:14b`).
+2. **Quita el prefijo de modelo** `askbox/`, `ollama/` y `ollama-safe/` (`askbox/qwen2.5-coder:14b` → `qwen2.5-coder:14b`). `deepseek/deepseek-chat` y `askbox/deepseek-chat` se quedan en la API nativa de DeepSeek, no en Ollama.
 3. **Recorte lean** en destinos locales (allin / ollama / un modelo concreto): system corto y estable, últimos N mensajes enteros, tope de prompt. Los tiers `cloud-*` no se recortan así.
 4. **Cliente `POST /v1/route`** si `ROUTE_ENABLED=1`. Pide un perfil (`lean` / `standard` / `full`) y clampa la respuesta a topes fijos. Con `ROUTE_ENABLED=0` el recorte es el de lean v2. Detalle en `sanitize-proxy/ROUTE_PHASE2.md`.
 5. **SPLIT** (activo por defecto): el último mensaje de usuario elige el destino.
    - Código → modelo local `LEAN_OLLAMA_MODEL` (`qwen2.5-coder:14b`) vía `POST /v1/ask` con `provider=ollama`.
    - Chat → tier cloud `CHAT_CLOUD_MODEL` (`cloud-fast` → `tier=fast` en askbox).
    - Un `model` que ya es `cloud`, `cloud-fast`, `cloud-balanced` o `cloud-strong` no se reescribe.
+   - `deepseek-chat`, `deepseek-reasoner`, `deepseek/<id>` o `provider=deepseek` tampoco: van a askBox como DeepSeek nube (sin recorte lean). El tag local `deepseek-r1:14b` no es esa ruta y el SPLIT lo trata como cualquier otro modelo local.
 
 ### Sticky: solo el último user
 

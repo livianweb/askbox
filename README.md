@@ -249,7 +249,22 @@ curl -s $J -H "Authorization: Bearer $TOK" \
   -d '{"prompt":"Di hola en una frase","provider":"ollama"}' $A/v1/ask
 ```
 
-Sin clave de proveedor, `/v1/ask` responde `502 no_provider_key` y deja la traza en `requests`. Con claves de sistema (`GEMINI_API_KEY` / `OPENROUTER_API_KEY` en `.env`) y proyecto con `allow_system_keys=true`, se usan como respaldo. `provider=ollama` no usa esas claves ni sale a internet (abajo). `mode=allin` solo las usa en la etapa web o si Ollama falla.
+Sin clave de proveedor, `/v1/ask` responde `502 no_provider_key` y deja la traza en `requests`. Con claves de sistema (`GEMINI_API_KEY` / `OPENROUTER_API_KEY` / `DEEPSEEK_API_KEY` en `.env`) y proyecto con `allow_system_keys=true`, se usan como respaldo. `provider=ollama` no usa esas claves ni sale a internet (abajo). `mode=allin` solo las usa en la etapa web o si Ollama falla.
+
+### DeepSeek nube (`provider=deepseek`)
+
+API nativa en `https://api.deepseek.com/chat/completions` (no OpenRouter, no el tag local `deepseek-r1:14b`). En la cascada automática entra solo si hay clave, después de Gemini. Si el cliente nombra el modelo, un fallo **no** pasa a Gemini ni a OpenRouter. Los ids que salen hacia DeepSeek son exactamente `deepseek-chat` (clase M, tarifa cache-miss V3 0.27/1.10 USD por millón) y `deepseek-reasoner` (clase L, era R1 0.55/2.19). En noviembre 2026 la página de precios lista `deepseek-flash` y `deepseek-v4-pro`; si la API rechaza los ids antiguos, la respuesta es `provider_failed` y no hay otro proveedor.
+
+| Cuerpo JSON | Efecto |
+|---|---|
+| `{"prompt":"…","provider":"deepseek"}` | `deepseek-chat` (default) |
+| `{"prompt":"…","model":"deepseek-chat"}` | fuerza chat, aunque no venga `provider` |
+| `{"prompt":"…","model":"deepseek-reasoner"}` | fuerza reasoner (clase L) |
+| `{"prompt":"…","model":"deepseek/deepseek-chat"}` | igual que el id pelado |
+
+El mismo cuerpo vale en `POST /v1/ask/stream`. Clave: `POST /v1/projects/{id}/keys` con `"provider":"deepseek"`, o `DEEPSEEK_API_KEY` en el `.env` del host (la leen los servicios `api` y `worker`) si el proyecto tiene `allow_system_keys`. Opcional: `DEEPSEEK_BASE_URL` (default `https://api.deepseek.com`) y `DEEPSEEK_TIMEOUT` (120). En vps4 hay que poner la clave en ese `.env` y reiniciar la API para que aplique la migración `018_deepseek_provider.sql`.
+
+OpenClaw/sanitize reenvía `deepseek-chat`, `deepseek-reasoner`, `deepseek/…` y `provider=deepseek` sin reescribirlos a `cloud-fast` ni a Ollama. `deepseek-r1:14b` sigue siendo el modelo local y el SPLIT no cambia.
 
 ### Ollama local (`provider=ollama`) — sin internet
 
@@ -401,7 +416,7 @@ Variables que lee la API (`api/app/config.py` → `api/app/mailer.py`): `ASKBOX_
 
 ## Diseño (resumen)
 
-- `api/app/llm/`: `router.py` (caché → tier → peers same-class en todos los proveedores con clave → bajada de tier; `provider=ollama` local, sin cascada si Ollama falla; auto sin ningún local activo sigue la cascada), `providers/` (gemini, openrouter, ollama), `ollama_local.py`, `local_models.py` (activos por proyecto), `allin.py`, `heuristics.py` (código, razonamiento, NLP, contexto largo), `keypool.py`, `cache.py`, `catalog.py` (`peer_chain`).
+- `api/app/llm/`: `router.py` (caché → tier → peers same-class en todos los proveedores con clave → bajada de tier; `provider=ollama` local, sin cascada si Ollama falla; `provider=deepseek` o id `deepseek-chat`/`deepseek-reasoner` solo a la API nativa, sin caer a otra nube; auto sin ningún local activo sigue la cascada), `providers/` (gemini, deepseek, openrouter, ollama), `ollama_local.py`, `local_models.py` (activos por proyecto), `allin.py`, `heuristics.py` (código, razonamiento, NLP, contexto largo), `keypool.py`, `cache.py`, `catalog.py` (`peer_chain`).
 - Modelos y cadenas en la tabla `model_catalog` (seeds/migraciones en `api/app/migrations/`); ajustar `enabled`, `priority`, `tier` y costes en BD (o nueva migración), no en código.
 - Seguridad: AES-256-GCM con AAD `proyecto:proveedor`, nonce aleatorio, `key_version`; la API nunca devuelve claves; logs sin prompts (solo longitud y hash truncado).
 - Límites: prompt ≤ 20000 chars, `max_output_tokens` ≤ 8192, rate limit Redis (`ASKBOX_ASK_RATE_PER_MIN`, 30/min por usuario, token `ab_live_` y proyecto en `/v1/ask`; login 10/min por IP).

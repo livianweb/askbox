@@ -166,7 +166,7 @@ export default function Playground() {
       {projects.length === 0 && !error && (
         <div className="card" style={{ borderLeft: "4px solid var(--amber-500)" }}>
           <p>
-            <strong>Aún no tienes ningún proyecto creado.</strong> Para consultar modelos necesitas crear un proyecto y registrar al menos una clave de proveedor (Gemini u OpenRouter).
+            <strong>Aún no tienes ningún proyecto creado.</strong> Para consultar modelos necesitas crear un proyecto y registrar al menos una clave de proveedor (Gemini, OpenRouter o DeepSeek).
           </p>
           <Link href="/projects" className="btn btn-primary btn-sm">
             Crear mi primer proyecto →

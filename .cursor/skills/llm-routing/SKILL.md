@@ -35,7 +35,7 @@ El runtime **solo** lee filas con `enabled = true` (`catalog.peer_chain`, `cost_
 | `priority` | Menor número = antes en la mezcla cross-provider (misma clase S\|M\|L). |
 | `tier` | Clase de potencia S (rápido), M (equilibrado), L (fuerte); el `tier` del `POST /v1/ask` elige qué clases recorrer (`TIER_CLASSES`). |
 | `cost_in_per_mtok` / `cost_out_per_mtok` | USD por millón de tokens (usage); no bloquean la llamada, pero deben reflejar la tarifa real del proveedor. |
-| `provider` | `gemini`, `openrouter` — solo participa si el proyecto tiene clave utilizable. |
+| `provider` | `gemini`, `deepseek`, `openrouter` — solo participa si el proyecto tiene clave utilizable. |
 
 **Pasos habituales**
 
@@ -53,7 +53,11 @@ El runtime **solo** lee filas con `enabled = true` (`catalog.peer_chain`, `cost_
 
 ## Ruta explícita a Ollama (fuera de la cascada, 100 % local)
 
-`provider=ollama` o `model=ollama/<slug>` en `POST /v1/ask` y `/v1/ask/stream` llama a Ollama (`OLLAMA_BASE_URL`, default `http://ollama:11434`). No usa keypool, `model_catalog`, Gemini, OpenRouter ni búsqueda web, y un fallo de Ollama **no** cae a la cascada. Sin modelo (o con `auto`), elige en local: código → `OLLAMA_MODEL` / `ALLIN_CODE_MODEL`; razonamiento duro → `OLLAMA_REASON_MODEL`; texto/NLP → `OLLAMA_NLP_MODEL` (default `llama3.1:8b`; no existe `llama3.3:8b`); contexto largo → `OLLAMA_LONGCTX_MODEL` (`mistral-nemo:12b`); desarrollo complejo (plan y código) → razón y luego código, todo local (`models_chain`), salvo que ambos resuelvan al mismo slug: entonces una sola llamada. Cada slug elegido pasa por `local_models.resolve_local_model`: si el proyecto lo tiene inactivo, se usa el local principal activo (default el de código, `qwen2.5-coder:14b`); si no hay ninguno activo, el auto local sigue por la cascada de nube. Un slug concreto es una sola llamada a ese modelo, aunque esté inactivo. Los adjuntos siguen en `422 ollama_no_attachments`. No añadir Ollama a `PROVIDER_ORDER` ni al `CHECK` de `model_catalog`. Preferencias en `projects.ollama_models` (`GET`/`PUT /v1/projects/{id}/ollama-models`); `OLLAMA_DEFAULT_ACTIVE_MODELS` vacío = solo el slot de código.
+`provider=ollama` o `model=ollama/<slug>` en `POST /v1/ask` y `/v1/ask/stream` llama a Ollama (`OLLAMA_BASE_URL`, default `http://ollama:11434`). No usa keypool, `model_catalog`, Gemini, OpenRouter, DeepSeek ni búsqueda web, y un fallo de Ollama **no** cae a la cascada. Sin modelo (o con `auto`), elige en local: código → `OLLAMA_MODEL` / `ALLIN_CODE_MODEL`; razonamiento duro → `OLLAMA_REASON_MODEL`; texto/NLP → `OLLAMA_NLP_MODEL` (default `llama3.1:8b`; no existe `llama3.3:8b`); contexto largo → `OLLAMA_LONGCTX_MODEL` (`mistral-nemo:12b`); desarrollo complejo (plan y código) → razón y luego código, todo local (`models_chain`), salvo que ambos resuelvan al mismo slug: entonces una sola llamada. Cada slug elegido pasa por `local_models.resolve_local_model`: si el proyecto lo tiene inactivo, se usa el local principal activo (default el de código, `qwen2.5-coder:14b`); si no hay ninguno activo, el auto local sigue por la cascada de nube. Un slug concreto es una sola llamada a ese modelo, aunque esté inactivo. Los adjuntos siguen en `422 ollama_no_attachments`. No añadir Ollama a `PROVIDER_ORDER` ni al `CHECK` de `model_catalog`. Preferencias en `projects.ollama_models` (`GET`/`PUT /v1/projects/{id}/ollama-models`); `OLLAMA_DEFAULT_ACTIVE_MODELS` vacío = solo el slot de código.
+
+## Ruta explícita a DeepSeek nube (sin caer a otra cascada)
+
+`provider=deepseek` o `model=deepseek-chat` / `model=deepseek-reasoner` (también `deepseek/<id>` y `askbox/deepseek-chat`) llama a la API nativa (`https://api.deepseek.com/chat/completions`). No es OpenRouter ni el tag local `deepseek-r1:14b`. Sin modelo, el default es `deepseek-chat`. Un fallo o la falta de clave (`no_provider_key`) **no** sigue a Gemini ni a OpenRouter. La clave sale de `api_keys.provider=deepseek` o de `DEEPSEEK_API_KEY` si el proyecto tiene `allow_system_keys`. En la cascada automática (sin ese id) DeepSeek entra en `PROVIDER_ORDER` solo cuando hay clave, después de Gemini y antes de OpenRouter a igualdad de `priority`.
 
 ## `mode=allin` (híbrido; alias `provider=allin`)
 
@@ -61,12 +65,12 @@ No es la ruta Ollama. Puede extraer adjuntos, pedir un resumen web (Gemini con g
 
 ## Orden obligatorio de decisión
 
-Por cada `POST /v1/ask` **sin** ruta explícita a Ollama y **sin** `mode=allin` / `provider=allin`, respetar este orden:
+Por cada `POST /v1/ask` **sin** ruta explícita a Ollama, **sin** ruta explícita a DeepSeek (`provider=deepseek` o id `deepseek-chat` / `deepseek-reasoner`) y **sin** `mode=allin` / `provider=allin`, respetar este orden:
 
 1. **Caché** — clave `sha256(project_id + prompt_rendered + tier + max_tokens + json_schema)` en Redis; TTL por proyecto.
 2. **Cooldown de clave** — excluir filas `api_keys` con `cooldown_until > now`; pool por proyecto.
 3. **Tier** — respetar el pedido o heurística en `auto`.
-4. **Peers (provider-agnostic)** — `catalog.peer_chain`: por cada clase S|M|L del tier pedido, mezclar modelos de `gemini` y `openrouter` (solo proveedores con clave utilizable), orden `priority` y desempate `PROVIDER_ORDER`.
+4. **Peers (provider-agnostic)** — `catalog.peer_chain`: por cada clase S|M|L del tier pedido, mezclar modelos de `gemini`, `deepseek` y `openrouter` (solo proveedores con clave utilizable), orden `priority` y desempate `PROVIDER_ORDER`. Una ruta explícita a DeepSeek no usa este paso.
 5. **Bajada de potencia** — si se agotan todos los peers del tier pedido, `prev_tier` (`strong`→`balanced`→`fast`) y repetir. No hay lógica «si Gemini → …».
 6. **Modo `auto`** — si sigue fallando tras bajadas, **una** escalada al tier superior (`next_tier`).
 
@@ -92,7 +96,7 @@ Heredar el estilo de agentshop-x `gemini.py`:
 |---------|-----------------|
 | `api/app/llm/router.py` | Orquestación tier → cadena → respuesta unificada |
 | `api/app/llm/catalog.py` | `peer_chain`, `TIER_CLASSES`, orden cross-provider |
-| `api/app/llm/providers/` | Gemini, OpenRouter; Ollama solo si el cliente lo pide (`ollama.py`) |
+| `api/app/llm/providers/` | Gemini, DeepSeek, OpenRouter; Ollama solo si el cliente lo pide (`ollama.py`) |
 | `api/app/llm/ollama_route.py` | Parseo de `provider` / `model` explícitos (`auto` no es un slug de Ollama) |
 | `api/app/llm/ollama_local.py` | Ejecución local de `provider=ollama` (un fallo no cae a la nube) |
 | `api/app/llm/local_models.py` | Slots activos por proyecto y sustitución al principal |

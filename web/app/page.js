@@ -89,7 +89,7 @@ export default function Home() {
             <span className="badge badge-emerald">Seguridad</span>
           </div>
           <p>
-            Añade tus API keys de Gemini u OpenRouter. Se cifran con AES-GCM en el servidor y nunca se exponen al cliente. Genera tokens <code>ab_live_</code> para conectar Postman, cURL o tus aplicaciones.
+            Añade tus API keys de Gemini, OpenRouter o DeepSeek. Se cifran con AES-GCM en el servidor y nunca se exponen al cliente. Genera tokens <code>ab_live_</code> para conectar Postman, cURL o tus aplicaciones.
           </p>
           <div style={{ marginTop: "1rem" }}>
             <Link href="/projects" className="btn btn-secondary btn-sm">

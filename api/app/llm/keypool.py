@@ -12,6 +12,7 @@ log = logging.getLogger(__name__)
 _SYSTEM_KEYS = {
     "gemini": lambda: settings.system_gemini_key,
     "openrouter": lambda: settings.system_openrouter_key,
+    "deepseek": lambda: settings.system_deepseek_key,
 }
 
 
