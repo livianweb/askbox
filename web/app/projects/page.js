@@ -56,7 +56,7 @@ function Keys({ project }) {
         <div>
           <h4>1. Claves de Proveedor LLM</h4>
           <p className="field-desc" style={{ margin: 0 }}>
-            Tus claves privadas de Gemini y OpenRouter. Se almacenan <strong>cifradas en BD (AES-GCM)</strong> y nunca se devuelven en claro al navegador.
+            Tus claves privadas de Gemini, OpenRouter y DeepSeek. Se almacenan <strong>cifradas en BD (AES-GCM)</strong> y nunca se devuelven en claro al navegador.
           </p>
         </div>
         <span className="badge badge-emerald">Cifrado AES-GCM</span>
@@ -102,6 +102,7 @@ function Keys({ project }) {
             <select id={`prov-${project.id}`} value={provider} onChange={(e) => setProvider(e.target.value)}>
               <option value="gemini">Google Gemini</option>
               <option value="openrouter">OpenRouter</option>
+              <option value="deepseek">DeepSeek</option>
             </select>
           </div>
           <div>
@@ -622,7 +623,7 @@ export default function Projects() {
           <div>
             <h1>Proyectos, Claves y Tokens API</h1>
             <p style={{ margin: 0 }}>
-              Administra tus entornos de trabajo, registra claves de Gemini/OpenRouter y genera tokens Bearer <code>ab_live_</code> para Postman y automatizaciones.
+              Administra tus entornos de trabajo, registra claves de Gemini, OpenRouter o DeepSeek y genera tokens Bearer <code>ab_live_</code> para Postman y automatizaciones.
             </p>
           </div>
           <div style={{ display: "flex", gap: "0.5rem" }}>

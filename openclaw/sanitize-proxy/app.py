@@ -76,6 +76,62 @@ def _strip_model_prefix(model: str) -> str:
     return model
 
 
+def deepseek_target(model: str, provider: str = "") -> str | None:
+    """Slug de DeepSeek nube si el cliente lo pidió. None = no es esa ruta.
+
+    `ollama/deepseek-r1:14b` sigue en local. `provider=deepseek` sin id usa chat.
+    Un id desconocido con provider deepseek se reenvía tal cual para que askBox lo rechace.
+    """
+    prov = (provider or "").strip().lower()
+    raw = (model or "").strip()
+    if "/" in raw:
+        prefix, rest = raw.split("/", 1)
+        prefix_l = prefix.lower()
+        rest = rest.strip()
+        if prefix_l in ("ollama", "ollama-safe"):
+            return None
+        if prefix_l == "askbox" and rest:
+            raw = rest
+        elif prefix_l == "deepseek" and rest:
+            raw = rest
+            prov = "deepseek"
+    if "/" in raw:
+        prefix, rest = raw.split("/", 1)
+        if prefix.lower() == "deepseek" and rest.strip():
+            raw = rest.strip()
+            prov = "deepseek"
+    low = raw.strip().lower()
+    if low in DEEPSEEK_SLUGS:
+        return low
+    if prov == "deepseek":
+        # allin/auto/ollama son modos de sanitize, no ids de la API.
+        if low in ("", "auto", "deepseek", "allin", "askbox-allin", "ollama"):
+            return DEEPSEEK_DEFAULT
+        return raw.strip() or DEEPSEEK_DEFAULT
+    return None
+
+
+def resolve_chat_model(body: dict[str, Any]) -> tuple[str, str]:
+    """(model_bare, split_reason). DeepSeek cloud no lo reescribe SPLIT.
+
+    Los tiers cloud-* tampoco. El resto, con SPLIT, sigue código local / chat cloud-fast.
+    """
+    model_in = str(body.get("model") or "allin")
+    provider_in = str(body.get("provider") or "")
+    ds = deepseek_target(model_in, provider_in)
+    if ds:
+        return ds, "explicit_deepseek"
+    model_bare = _strip_model_prefix(model_in)
+    if model_bare in CLOUD_TIERS:
+        return model_bare, "explicit_cloud"
+    if not SPLIT_ENABLED:
+        return model_bare, "off"
+    is_code, why = _is_code_turn(body)
+    if is_code:
+        return DEFAULT_LOCAL_MODEL, f"code:{why}"
+    return _strip_model_prefix(CHAT_CLOUD_MODEL), "chat"
+
+
 def _is_code_turn(body: dict[str, Any]) -> tuple[bool, str]:
     """Código solo si el ÚLTIMO user lo pide (fences/_CODE_RX/keywords). Historial con fences no pega chat a local."""
     feats = _route_features(body.get("messages") or [], bool(body.get("tools")))
@@ -289,7 +345,14 @@ async def _ollama_stop(model: str | None) -> None:
 app = FastAPI(title="openclaw-sanitize-proxy", docs_url=None, redoc_url=None, openapi_url=None)
 
 CLOUD_TIERS = {"cloud": "fast", "cloud-fast": "fast", "cloud-balanced": "balanced", "cloud-strong": "strong"}
-ASKBOX_MODELS = ["cloud", "cloud-fast", "cloud-balanced", "cloud-strong", "allin", "auto", "qwen2.5-coder:14b", "deepseek-r1:14b", "llama3.1:8b", "mistral-nemo:12b"]
+# Ids de la API nativa de DeepSeek. El tag local deepseek-r1:14b no entra aquí.
+DEEPSEEK_SLUGS = {"deepseek-chat", "deepseek-reasoner"}
+DEEPSEEK_DEFAULT = "deepseek-chat"
+ASKBOX_MODELS = [
+    "cloud", "cloud-fast", "cloud-balanced", "cloud-strong", "allin", "auto",
+    "qwen2.5-coder:14b", "deepseek-r1:14b", "llama3.1:8b", "mistral-nemo:12b",
+    "deepseek-chat", "deepseek-reasoner",
+]
 
 
 @app.get("/health")
@@ -319,13 +382,19 @@ def _content_text(c: Any) -> str:
 
 def _to_askin(body: dict[str, Any], route: dict[str, Any] | None = None) -> dict[str, Any]:
     route = route or _default_route()
-    model = str(body.get("model") or "allin")
+    model_raw = str(body.get("model") or "allin")
+    provider_hint = str(body.get("provider") or "")
     # OpenClaw manda provider/model (askbox/…, ollama/…, ollama-safe/…). Quitar prefijo.
-    model = _strip_model_prefix(model)
+    ds = deepseek_target(model_raw, provider_hint)
+    model = _strip_model_prefix(model_raw)
     out: dict[str, Any] = {
         "max_output_tokens": int(body.get("max_tokens") or body.get("max_completion_tokens") or DEFAULT_MAX_OUT),
     }
-    if model in CLOUD_TIERS:
+    if ds:
+        # Nube DeepSeek: mismo criterio que cloud-* (sin recorte lean).
+        out["provider"] = "deepseek"
+        out["model"] = ds
+    elif model in CLOUD_TIERS:
         out["tier"] = CLOUD_TIERS[model]
     elif model in ("allin", "askbox-allin"):
         out["mode"] = MODE
@@ -334,7 +403,7 @@ def _to_askin(body: dict[str, Any], route: dict[str, Any] | None = None) -> dict
     else:
         out["provider"] = "ollama"
         out["model"] = model
-    lean = "tier" not in out
+    lean = "tier" not in out and out.get("provider") != "deepseek"
 
     system_parts: list[str] = []
     other: list[dict[str, Any]] = []
@@ -440,14 +509,13 @@ async def chat_completions(request: Request) -> Response:
     body = mask_obj(raw, c)
     route = None
     model_in = str(body.get("model") or "allin")
-    model_bare = _strip_model_prefix(model_in)
-    split_reason = "explicit_cloud" if model_bare in CLOUD_TIERS else "off"
-    if SPLIT_ENABLED and model_bare not in CLOUD_TIERS:
-        is_code, why = _is_code_turn(body)
-        split_reason = f"code:{why}" if is_code else "chat"
-        model_bare = DEFAULT_LOCAL_MODEL if is_code else _strip_model_prefix(CHAT_CLOUD_MODEL)
+    model_bare, split_reason = resolve_chat_model(body)
+    # cloud-* y DeepSeek explícito no piden perfil (igual que el chat ya reescrito a cloud-fast).
+    skip_route = model_bare in CLOUD_TIERS or split_reason == "explicit_deepseek"
     body = {**body, "model": model_bare}
-    if model_bare not in CLOUD_TIERS or ROUTE_ON_CHAT:
+    if split_reason == "explicit_deepseek":
+        body["provider"] = "deepseek"
+    if not skip_route or ROUTE_ON_CHAT:
         route = await _decide_route(body)
         _log_route(route)
     _sr, _, _why = split_reason.partition(":")

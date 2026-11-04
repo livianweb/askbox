@@ -71,12 +71,15 @@ class AskIn(BaseModel):
         default=None,
         max_length=32,
         description=(
-            "Enrutado explícito. `ollama`: solo Ollama local, sin Gemini, OpenRouter ni web "
+            "Enrutado explícito. `ollama`: solo Ollama local, sin Gemini, OpenRouter, DeepSeek ni web "
             "(sin modelo o con `auto`, elige en local código, razonamiento, texto o contexto largo; "
             "un fallo no cae a la nube). "
+            "`deepseek`: API nativa de DeepSeek (default `deepseek-chat` si no hay model). "
+            "Un fallo no cae a Gemini ni a OpenRouter. No es el tag local `deepseek-r1:14b`. "
             "`allin`: alias de `mode=allin` (híbrido). "
-            "Si se omite, la cascada por tier, catálogo y keypool no cambia. "
-            "`ollama` no admite adjuntos; `allin` sí (OCR local)."
+            "Si se omite, la cascada por tier, catálogo y keypool no cambia "
+            "(DeepSeek entra si el proyecto tiene clave). "
+            "`ollama` y `deepseek` no admiten adjuntos; `allin` sí (OCR local)."
         ),
     )
     model: str | None = Field(
@@ -87,7 +90,10 @@ class AskIn(BaseModel):
             "llama3.1:8b o mistral-nemo:12b). "
             "Si se omite o es `auto`, la selección local depende del prompt (no llama a la nube). "
             "También vale model=ollama/<slug> sin provider (el prefijo elige Ollama). "
-            "Sin provider ni prefijo ollama/, model se rechaza. Con mode/provider allin se ignora."
+            "`deepseek-chat` y `deepseek-reasoner` (o `deepseek/<id>`) fuerzan la API nativa "
+            "aunque no venga provider. `deepseek-r1:14b` sigue siendo local. "
+            "Sin provider, sin esos ids y sin prefijo ollama/, model se rechaza. "
+            "Con mode/provider allin se ignora."
         ),
     )
     mode: str | None = Field(
@@ -218,6 +224,12 @@ async def _prepare_ask(pool, redis, auth: AskAuth, body: AskIn) -> tuple:
             "ollama_no_attachments",
             "Ollama no admite adjuntos en /v1/ask. Quita attachments o omite provider.",
         )
+    if body.provider == "deepseek" and normalized:
+        raise err(
+            422,
+            "deepseek_no_attachments",
+            "DeepSeek en askbox no admite adjuntos. Quita attachments o usa Gemini.",
+        )
     task_used = None
     if normalized:
         task_used = attachments.infer_task(
@@ -237,10 +249,12 @@ async def _prepare_ask(pool, redis, auth: AskAuth, body: AskIn) -> tuple:
         "Auth: cookie de sesión o `Authorization: Bearer ab_live_…` (scope ask:read). "
         "Cuerpo: `prompt` o `prompt_template` + `variables`, más tier, tokens y opcionalmente adjuntos. "
         "Opcional: `provider=ollama` (y `model`, o `model=ollama/<slug>`) es 100 % local "
-        "(sin Gemini, OpenRouter ni web; si Ollama falla, 502, sin fallback). "
+        "(sin Gemini, OpenRouter, DeepSeek ni web; si Ollama falla, 502, sin fallback). "
+        "`provider=deepseek` o `model=deepseek-chat` / `deepseek-reasoner` llama solo a DeepSeek "
+        "(sin fallback a otra nube). "
         "`mode=allin` o `provider=allin` usa el orquestador híbrido (adjuntos, web si hace falta, "
         "modelos locales —incluido el informe— y fallback a la cascada). "
-        "Sin esos campos la cascada Gemini/OpenRouter no cambia. "
+        "Sin esos campos la cascada (Gemini, DeepSeek si hay clave, OpenRouter) no cambia de política. "
         "Los adjuntos no se guardan; la caché Redis incluye un digest de los bytes enviados al proveedor."
     ),
 )
@@ -274,7 +288,8 @@ def _sse(data: dict) -> str:
     "/ask/stream",
     summary="Completar prompt con SSE",
     description=(
-        "Mismo cuerpo que POST /v1/ask, incluidos `mode=allin` y `provider=ollama` / `provider=allin`. "
+        "Mismo cuerpo que POST /v1/ask, incluidos `mode=allin`, `provider=ollama`, "
+        "`provider=deepseek` y `provider=allin`. "
         "Respuesta text/event-stream: eventos `delta` (text) y `done` (metadatos, incl. task_used y attachments_processed si aplica)."
     ),
 )

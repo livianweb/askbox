@@ -44,6 +44,7 @@ class Settings:
     # Claves de sistema (opcionales, solo servidor; nunca salen por la API).
     system_gemini_key: str = os.getenv("GEMINI_API_KEY", "")
     system_openrouter_key: str = os.getenv("OPENROUTER_API_KEY", "")
+    system_deepseek_key: str = os.getenv("DEEPSEEK_API_KEY", "")
 
     # Auth
     cookie_name: str = "askbox_session"
@@ -111,6 +112,9 @@ class Settings:
     ollama_default_active: str = (os.getenv("OLLAMA_DEFAULT_ACTIVE_MODELS") or "").strip()
     openrouter_referer: str = os.getenv("ASKBOX_OPENROUTER_REFERER", "https://askbox.local")
     openrouter_title: str = os.getenv("ASKBOX_OPENROUTER_TITLE", "askbox")
+    # DeepSeek nativo (provider=deepseek). No es el tag local deepseek-r1:14b.
+    deepseek_base_url: str = (os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").rstrip("/")
+    deepseek_timeout: float = float(os.getenv("DEEPSEEK_TIMEOUT", "120") or 120)
 
     # OCR (POST /v1/ocr, app/ocr/engine.py). Todo con default: sin variables el comportamiento
     # existente no cambia. ASKBOX_PDF_* los usa además el rasterizado de PDF adjuntos en /v1/ask.

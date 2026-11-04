@@ -3,9 +3,11 @@
 Política provider-agnostic: para el tier pedido, peers de misma clase de potencia (S|M|L)
 entre todos los proveedores con clave; solo bajar de clase/tier cuando se agotan.
 Si el cliente pide provider=ollama (o model=ollama/<slug>), la ruta es local
-(`ollama_local`) y un fallo de Ollama no consulta esta cascada. Si el enrutado
-automático (modelo omitido o ``auto``) no tiene ningún modelo local activo en
-el proyecto, la petición sigue por la cascada de nube.
+(`ollama_local`) y un fallo de Ollama no consulta esta cascada. Si pide
+provider=deepseek o un id deepseek-chat / deepseek-reasoner, la llamada va solo
+a la API nativa de DeepSeek: un fallo no cae a Gemini ni a OpenRouter.
+Si el enrutado automático de Ollama (modelo omitido o ``auto``) no tiene ningún
+modelo local activo en el proyecto, la petición sigue por la cascada de nube.
 `mode=allin` o `provider=allin` delega en `allin.py` (híbrido, con fallback).
 Sin esos parámetros el camino de cascada no cambia.
 Todas las llamadas externas viven bajo app/llm/.
@@ -24,15 +26,16 @@ from app.llm.errors import LLMError
 from app.llm.heuristics import prompt_text
 from app.llm.local_models import resolve_local_model
 from app.llm.ollama_route import parse_explicit_provider
-from app.llm.providers import gemini, openrouter
+from app.llm.providers import deepseek, gemini, openrouter
 from app.llm.schema_check import response_matches_schema
 
 log = logging.getLogger(__name__)
 
 # Orden de desempate entre proveedores (no implica «fallar primero en X»).
-PROVIDER_ORDER = ("gemini", "openrouter")
+PROVIDER_ORDER = ("gemini", "deepseek", "openrouter")
 _PROVIDERS = {
     "gemini": gemini.complete,
+    "deepseek": deepseek.complete,
     "openrouter": openrouter.complete,
 }
 _CODE_HINT = re.compile(r"```|\bdef \w+\(|\bclass \w+|function\s+\w+\(|=>|#include|SELECT\s.+\sFROM", re.I | re.S)
@@ -129,7 +132,7 @@ async def _cascade_peers(
     if not provider_keys:
         raise AskFailure(
             "No hay clave de proveedor utilizable (proyecto o sistema). "
-            "Añade una clave Gemini u OpenRouter al proyecto.",
+            "Añade una clave Gemini, DeepSeek u OpenRouter al proyecto.",
             tier_used=effective_tier,
             attempts=0,
             kind="fatal",
@@ -281,6 +284,91 @@ async def _cascade(
             )
 
 
+async def _ask_deepseek(
+    pool,
+    redis,
+    *,
+    project: dict,
+    messages: list[dict],
+    tier: str,
+    max_tokens: int,
+    json_schema: dict | None,
+    model: str,
+    ttl: int,
+    ckey: str,
+    temperature: float = 0.4,
+) -> dict[str, Any]:
+    """Un id en la API nativa. Prueba claves del proyecto y, si toca, la de sistema.
+
+    No llama a Gemini, OpenRouter ni Ollama. Sin clave: ``no_provider_key``.
+    """
+    keys = await keypool.candidates(pool, project, "deepseek")
+    if not keys:
+        raise AskFailure(
+            "No hay clave DeepSeek utilizable (proyecto o DEEPSEEK_API_KEY con allow_system_keys).",
+            tier_used=tier,
+            attempts=0,
+            kind="fatal",
+            code="no_provider_key",
+        )
+    attempts = 0
+    errors: list[str] = []
+    tag = f"deepseek:{model}"
+    for handle in keys:
+        attempts += 1
+        try:
+            out = await deepseek.complete(
+                messages,
+                api_key=handle.secret,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except LLMError as exc:
+            errors.append(str(exc))
+            log.warning("%s falló (%s): %s", tag, exc.kind, str(exc)[:160])
+            if exc.kind == "auth":
+                await keypool.mark_invalid(pool, handle)
+            elif exc.kind == "quota":
+                await keypool.mark_quota(pool, handle, message=str(exc))
+            continue
+        text = (out.get("text") or "").strip()
+        if not response_matches_schema(text, json_schema):
+            errors.append(f"{tag}: respuesta vacía o no cumple json_schema")
+            continue
+        await keypool.mark_success(pool, handle)
+        cin, cout = await catalog.cost_for_model(pool, "deepseek", out.get("model") or model)
+        in_tok = int(out.get("input_tokens") or 0)
+        out_tok = int(out.get("output_tokens") or 0)
+        cost = catalog.estimate_cost_usd(in_tok, out_tok, cin, cout)
+        result = {
+            "text": text,
+            "provider": "deepseek",
+            "model_used": out.get("model") or model,
+            "input_tokens": in_tok,
+            "output_tokens": out_tok,
+            "estimated_cost_usd": cost,
+            "models_chain": [tag],
+        }
+        await cache.put(redis, ckey, result, ttl)
+        return {
+            **result,
+            "cache_hit": False,
+            "tier_used": tier,
+            "attempts": attempts,
+            "key_id": handle.key_id,
+            "key_source": handle.source,
+        }
+    summary = "; ".join(errors[-3:])[:600]
+    raise AskFailure(
+        f"DeepSeek no respondió ({model}). {summary}".strip(),
+        tier_used=tier,
+        attempts=attempts,
+        kind="retry",
+        code="provider_failed",
+    )
+
+
 async def _ask_ollama(
     redis,
     *,
@@ -369,9 +457,17 @@ async def ask(
             explicit = parse_explicit_provider(provider, model)
         except ValueError as exc:
             raise AskFailure(str(exc), tier_used=tier, attempts=0, kind="fatal", code="provider_failed") from None
-    if explicit and atts:
+    if explicit and explicit[0] == "ollama" and atts:
         raise AskFailure(
             "Ollama no admite adjuntos en /v1/ask. Quita attachments o omite provider.",
+            tier_used=tier,
+            attempts=0,
+            kind="fatal",
+            code="provider_failed",
+        )
+    if explicit and explicit[0] == "deepseek" and atts:
+        raise AskFailure(
+            "DeepSeek en askbox no admite adjuntos. Quita attachments o usa Gemini.",
             tier_used=tier,
             attempts=0,
             kind="fatal",
@@ -389,7 +485,9 @@ async def ask(
     require_vision = bool(atts)
     requested_auto = tier == "auto"
     steps: list[str] | None
-    if explicit and explicit[1] == "auto":
+    ollama_explicit = explicit is not None and explicit[0] == "ollama"
+    deepseek_explicit = explicit is not None and explicit[0] == "deepseek"
+    if ollama_explicit and explicit[1] == "auto":
         # Cuatro rutas locales. Un slug inactivo cae al principal activo.
         # Si no queda ninguno, se deja la cascada (mismo cierre que allin).
         resolved: list[str] = []
@@ -398,6 +496,7 @@ async def ask(
             if not chosen:
                 log.info("ollama auto: sin modelo local activo (pedido %s); cascada", slug)
                 explicit = None
+                ollama_explicit = False
                 resolved = []
                 break
             if chosen != slug:
@@ -405,12 +504,12 @@ async def ask(
             resolved.append(chosen)
         # Nunca dos llamadas seguidas al mismo slug (p. ej. plan y código → Qwen).
         steps = ollama_local.dedupe_steps(resolved) or None
-    elif explicit:
+    elif ollama_explicit:
         # Modelo concreto: el cliente lo pidió, aunque el proyecto lo tenga inactivo.
         steps = [explicit[1]]
     else:
         steps = None
-    # Con Ollama explícito no se infiere ni se escala el tier: no elige modelo.
+    # Con ruta explícita no se infiere ni se escala el tier: no elige otro modelo.
     # Si el auto local no tenía ningún modelo activo, `explicit` ya es None.
     effective_tier = tier if explicit else (
         infer_tier_from_text(
@@ -422,7 +521,12 @@ async def ask(
         if requested_auto
         else tier
     )
-    route = "ollama:" + ">".join(steps) if steps else ""
+    if ollama_explicit and steps:
+        route = "ollama:" + ">".join(steps)
+    elif deepseek_explicit and explicit is not None:
+        route = "deepseek:" + explicit[1]
+    else:
+        route = ""
 
     ckey = cache.cache_key(
         str(project["id"]),
@@ -443,14 +547,14 @@ async def ask(
                 "tier_used": effective_tier,
                 "attempts": 0,
                 "key_id": None,
-                "key_source": "local" if explicit else None,
+                "key_source": "local" if ollama_explicit else None,
                 "input_tokens": hit.get("input_tokens") or 0,
                 "output_tokens": hit.get("output_tokens") or 0,
                 "estimated_cost_usd": hit.get("estimated_cost_usd") or 0.0,
                 "models_chain": hit.get("models_chain") or [],
             }
 
-    if explicit:
+    if ollama_explicit:
         return await _ask_ollama(
             redis,
             messages=messages,
@@ -458,6 +562,20 @@ async def ask(
             max_tokens=max_tokens,
             json_schema=json_schema,
             steps=steps or [],
+            ttl=ttl,
+            ckey=ckey,
+            temperature=temperature,
+        )
+    if deepseek_explicit and explicit is not None:
+        return await _ask_deepseek(
+            pool,
+            redis,
+            project=project,
+            messages=messages,
+            tier=effective_tier,
+            max_tokens=max_tokens,
+            json_schema=json_schema,
+            model=explicit[1],
             ttl=ttl,
             ckey=ckey,
             temperature=temperature,

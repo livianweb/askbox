@@ -12,7 +12,7 @@ from app.deps import current_user, err
 from app.llm.local_models import LocalPolicyError, apply_update, public_view
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
-PROVIDERS = {"gemini", "openrouter"}
+PROVIDERS = {"gemini", "openrouter", "deepseek"}
 
 
 class ProjectIn(BaseModel):
@@ -23,7 +23,7 @@ class ProjectIn(BaseModel):
 
 
 class KeyIn(BaseModel):
-    provider: str = Field(pattern="^(gemini|openrouter)$")
+    provider: str = Field(pattern="^(gemini|openrouter|deepseek)$")
     label: str = Field(default="", max_length=80)
     key: str = Field(min_length=8, max_length=512)
 
