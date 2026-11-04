@@ -91,7 +91,9 @@ class AskIn(BaseModel):
             "Si se omite o es `auto`, la selección local depende del prompt (no llama a la nube). "
             "También vale model=ollama/<slug> sin provider (el prefijo elige Ollama). "
             "`deepseek-chat` y `deepseek-reasoner` (o `deepseek/<id>`) fuerzan la API nativa "
-            "aunque no venga provider. `deepseek-r1:14b` sigue siendo local. "
+            "aunque no venga provider. En reasoner no se envía temperature y max_output_tokens "
+            "sube al menos a 1024 (si content llega vacío se usa reasoning_content). "
+            "`deepseek-r1:14b` sigue siendo local. "
             "Sin provider, sin esos ids y sin prefijo ollama/, model se rechaza. "
             "Con mode/provider allin se ignora."
         ),

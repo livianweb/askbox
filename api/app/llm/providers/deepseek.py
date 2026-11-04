@@ -13,6 +13,10 @@ from app.llm.errors import LLMError, classify
 
 _NO_ATTACHMENTS = "DeepSeek en askbox no admite adjuntos. Quita attachments o usa Gemini."
 
+# deepseek-reasoner gasta la salida en reasoning_content antes de content.
+# Un max_tokens corto (128, 512) deja content vacío y askbox respondía 502.
+REASONER_MIN_OUTPUT_TOKENS = 1024
+
 
 def chat_completions_url(base_url: str | None = None) -> str:
     base = (settings.deepseek_base_url if base_url is None else base_url).strip().rstrip("/")
@@ -69,9 +73,27 @@ def _to_deepseek_messages(messages: list[dict]) -> list[dict]:
     return out
 
 
+def _is_reasoner(model: str) -> bool:
+    return (model or "").strip().lower() == "deepseek-reasoner"
+
+
+def output_token_budget(model: str, max_tokens: int) -> int:
+    """Suelo de salida solo para deepseek-reasoner (ver REASONER_MIN_OUTPUT_TOKENS)."""
+    asked = max(0, int(max_tokens))
+    if _is_reasoner(model):
+        return max(asked, REASONER_MIN_OUTPUT_TOKENS)
+    return asked
+
+
 def _choice_text(message: dict) -> str:
-    """La respuesta usable va en content. reasoning_content es el trazo interno."""
-    return _message_text(message.get("content"))
+    """Prefiere content. Si viene vacío, usa reasoning_content ya recortado.
+
+    Con max_tokens bajo el reasoner llena reasoning_content y deja content en blanco.
+    """
+    text = _message_text(message.get("content"))
+    if text:
+        return text
+    return _message_text(message.get("reasoning_content"))
 
 
 async def complete(
@@ -82,13 +104,18 @@ async def complete(
     max_tokens: int,
     temperature: float = 0.4,
 ) -> dict:
-    """POST {DEEPSEEK_BASE_URL}/chat/completions. Bearer, sin loguear la clave."""
-    payload = {
+    """POST {DEEPSEEK_BASE_URL}/chat/completions. Bearer, sin loguear la clave.
+
+    deepseek-reasoner no recibe temperature: la API lo rechaza. Su max_tokens
+    no baja de REASONER_MIN_OUTPUT_TOKENS.
+    """
+    payload: dict = {
         "model": model,
         "messages": _to_deepseek_messages(messages),
-        "temperature": temperature,
-        "max_tokens": max_tokens,
+        "max_tokens": output_token_budget(model, max_tokens),
     }
+    if not _is_reasoner(model):
+        payload["temperature"] = temperature
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     url = chat_completions_url()
     try:

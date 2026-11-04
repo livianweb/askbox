@@ -180,9 +180,55 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["url"], "https://api.deepseek.com/chat/completions")
         self.assertEqual(seen["headers"]["Authorization"], "Bearer sk-test")
         self.assertEqual(seen["json"]["model"], "deepseek-chat")
+        self.assertEqual(seen["json"]["max_tokens"], 64)
+        self.assertEqual(seen["json"]["temperature"], 0.4)
         self.assertEqual(out["text"], "hola")
         self.assertNotIn("pienso", out["text"])
         self.assertEqual(out["input_tokens"], 3)
+
+    async def test_reasoner_empty_content_uses_reasoning(self):
+        seen = {}
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, headers=None, json=None):
+                seen["json"] = json
+                return _FakeResp(
+                    200,
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": "  ",
+                                    "reasoning_content": "  la respuesta  ",
+                                }
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 5, "completion_tokens": 9},
+                    },
+                )
+
+        with patch("app.llm.providers.deepseek.httpx.AsyncClient", FakeClient):
+            out = await deepseek.complete(
+                [{"role": "user", "content": "razona"}],
+                api_key="sk-test",
+                model="deepseek-reasoner",
+                max_tokens=128,
+                temperature=0.2,
+            )
+        self.assertEqual(out["text"], "la respuesta")
+        self.assertEqual(out["output_tokens"], 9)
+        self.assertNotIn("temperature", seen["json"])
+        self.assertGreaterEqual(seen["json"]["max_tokens"], deepseek.REASONER_MIN_OUTPUT_TOKENS)
+        self.assertEqual(seen["json"]["max_tokens"], 1024)
 
     def test_base_url_suffixes(self):
         self.assertEqual(

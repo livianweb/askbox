@@ -259,12 +259,14 @@ API nativa en `https://api.deepseek.com/chat/completions` (no OpenRouter, no el 
 |---|---|
 | `{"prompt":"…","provider":"deepseek"}` | `deepseek-chat` (default) |
 | `{"prompt":"…","model":"deepseek-chat"}` | fuerza chat, aunque no venga `provider` |
-| `{"prompt":"…","model":"deepseek-reasoner"}` | fuerza reasoner (clase L) |
+| `{"prompt":"…","model":"deepseek-reasoner"}` | fuerza reasoner (clase L). No se envía `temperature` (la API lo rechaza). `max_tokens` sube al menos a 1024 para que no se gaste todo en el pensamiento |
 | `{"prompt":"…","model":"deepseek/deepseek-chat"}` | igual que el id pelado |
 
 El mismo cuerpo vale en `POST /v1/ask/stream`. Clave: `POST /v1/projects/{id}/keys` con `"provider":"deepseek"`, o `DEEPSEEK_API_KEY` en el `.env` del host (la leen los servicios `api` y `worker`) si el proyecto tiene `allow_system_keys`. Opcional: `DEEPSEEK_BASE_URL` (default `https://api.deepseek.com`) y `DEEPSEEK_TIMEOUT` (120). En vps4 hay que poner la clave en ese `.env` y reiniciar la API para que aplique la migración `018_deepseek_provider.sql`.
 
 OpenClaw/sanitize reenvía `deepseek-chat`, `deepseek-reasoner`, `deepseek/…` y `provider=deepseek` sin reescribirlos a `cloud-fast` ni a Ollama. `deepseek-r1:14b` sigue siendo el modelo local y el SPLIT no cambia.
+
+`deepseek-reasoner` a menudo deja `message.content` vacío y pone el texto en `reasoning_content` cuando el tope de salida es pequeño. askbox pide al menos 1024 tokens de salida en ese modelo (aunque el cliente pida menos) y, si `content` sigue vacío, devuelve `reasoning_content`. `deepseek-chat` no cambia: respeta `max_tokens` y `temperature`, y si hay `content` no usa el trazo de razonamiento.
 
 ### Ollama local (`provider=ollama`) — sin internet
 

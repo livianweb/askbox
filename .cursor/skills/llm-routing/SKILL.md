@@ -57,7 +57,7 @@ El runtime **solo** lee filas con `enabled = true` (`catalog.peer_chain`, `cost_
 
 ## Ruta explícita a DeepSeek nube (sin caer a otra cascada)
 
-`provider=deepseek` o `model=deepseek-chat` / `model=deepseek-reasoner` (también `deepseek/<id>` y `askbox/deepseek-chat`) llama a la API nativa (`https://api.deepseek.com/chat/completions`). No es OpenRouter ni el tag local `deepseek-r1:14b`. Sin modelo, el default es `deepseek-chat`. Un fallo o la falta de clave (`no_provider_key`) **no** sigue a Gemini ni a OpenRouter. La clave sale de `api_keys.provider=deepseek` o de `DEEPSEEK_API_KEY` si el proyecto tiene `allow_system_keys`. En la cascada automática (sin ese id) DeepSeek entra en `PROVIDER_ORDER` solo cuando hay clave, después de Gemini y antes de OpenRouter a igualdad de `priority`.
+`provider=deepseek` o `model=deepseek-chat` / `model=deepseek-reasoner` (también `deepseek/<id>` y `askbox/deepseek-chat`) llama a la API nativa (`https://api.deepseek.com/chat/completions`). No es OpenRouter ni el tag local `deepseek-r1:14b`. Sin modelo, el default es `deepseek-chat`. En `deepseek-reasoner` no se envía `temperature` (la API lo rechaza) y `max_tokens` no baja de 1024; si `content` llega vacío se usa `reasoning_content`. Un fallo o la falta de clave (`no_provider_key`) **no** sigue a Gemini ni a OpenRouter. La clave sale de `api_keys.provider=deepseek` o de `DEEPSEEK_API_KEY` si el proyecto tiene `allow_system_keys`. En la cascada automática (sin ese id) DeepSeek entra en `PROVIDER_ORDER` solo cuando hay clave, después de Gemini y antes de OpenRouter a igualdad de `priority`.
 
 ## `mode=allin` (híbrido; alias `provider=allin`)
 
